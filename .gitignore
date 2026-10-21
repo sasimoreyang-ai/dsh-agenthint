@@ -1,0 +1,11 @@
+node_modules/
+.local-backup/
+.artifacts/
+*.tgz
+*.tsbuildinfo
+*.d.ts.map
+coverage/
+.env
+.env.*
+!.env.example
+docs/history/README.upstream.i18n.yaml

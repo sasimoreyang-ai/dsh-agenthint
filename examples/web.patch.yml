@@ -1,0 +1,13 @@
+# Replace address/model, then pass through dsh web --patch <this-file>.
+- id: llm-agent-hint
+  config:
+    provider: deepseek-agent-hint
+    baseURL: http://127.0.0.1:1025
+    models:
+      - id: YOUR_SERVED_MODEL
+        name: YOUR_SERVED_MODEL
+    agentHint:
+      enabled: true
+      sessionControl:
+        enabled: true
+        pluginTriggers: true

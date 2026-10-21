@@ -1,0 +1,14 @@
+This project contains code derived from DeepSeek Harness and its public
+AgentHint integration branch:
+https://github.com/Xavier-Zeng/deepseek-harness/tree/dsh-v0.2.0-agent-hint-rc.1
+Reference checkout commit: 56f74b1db1eda816cce00e6ea8de1889981a610c
+
+Copyright (c) 2026 DeepSeek. MIT License; see LICENSE.
+
+Community modifications maintained by sasimoreyang-ai include standalone
+packaging, stock rc.1 Adapter registration, a composing Remote Service,
+browser draft observation, reversible public archive observers, route/session
+guards, lifecycle deduplication and regression/integration tests.
+
+This is a community project, not an official DeepSeek npm package or a
+MindIE-Motor distribution.

@@ -1,0 +1,6 @@
+# Opt-in provider: installing this bundle registers the route; users select it explicitly.
+- insert:
+    - id: llm-agent-hint
+      name: '@sasimoreyang-ai/dsh-llm-agent-hint'
+      config:
+        provider: deepseek-agent-hint
