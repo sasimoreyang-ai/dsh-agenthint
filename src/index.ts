@@ -21,8 +21,9 @@ import type {} from '@deepseek-ai/cordis-plugin-loader'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { catalogModelInfo, DeepSeekAdapter } from '@deepseek-ai/dsh-llm-deepseek'
 import { getOrCreateAnonymousUserId } from '@deepseek-ai/dsh-anonymous-user-id'
-import { Config, plainOptions, resolveAdapterOptions } from './config.ts'
-import type { ResolvedAgentHintOptions } from './config.ts'
+import { Config, plainOptions, resolveAdapterOptions, resolveModels } from './config.ts'
+import type { InheritedConnection, ResolvedAgentHintOptions } from './config.ts'
+import { readInheritedConnection } from './inherited-connection.ts'
 import { DEFAULT_CONTROL_RETRIES, DEFAULT_CONTROL_TIMEOUT_MS, SessionControlClient } from './control-client.ts'
 import { agentHintPrepareExtensions } from './extension.ts'
 import { DEFAULT_PENDING_OP_AWAIT_MS, LifecycleBridge } from './lifecycle-bridge.ts'
@@ -33,8 +34,9 @@ import type {} from '@deepseek-ai/dsh-api-gateway'
 
 export { buildAgentHint } from './agent-hint.ts'
 export type { AgentHintInputs } from './agent-hint.ts'
-export { Config, DEFAULT_BASE_URL, DEFAULT_PROVIDER, plainOptions, resolveAdapterOptions } from './config.ts'
-export type { AgentHintConfig, Options, ResolvedAgentHintOptions, SessionControlConfig } from './config.ts'
+export { BASE_URL_ENV, Config, DEFAULT_BASE_URL, DEFAULT_PROVIDER, NO_INHERITED_CONNECTION, plainOptions, resolveAdapterOptions, resolveBaseURL, resolveModels } from './config.ts'
+export type { AgentHintConfig, InheritedConnection, Options, ResolvedAgentHintOptions, SessionControlConfig } from './config.ts'
+export { INHERIT_SOURCE_ID, readInheritedConnection } from './inherited-connection.ts'
 export { DEFAULT_CONTROL_RETRIES, DEFAULT_CONTROL_TIMEOUT_MS, SessionControlClient } from './control-client.ts'
 export type { ControlWarnSink, SessionControlClientOptions } from './control-client.ts'
 export { agentHintPrepareExtensions } from './extension.ts'
@@ -52,7 +54,27 @@ export function apply(ctx: Context, config: Config): void {
     return
   }
   const provider = config.provider
-  const options = () => resolveAdapterOptions(plainOptions(config), launchEnvironmentOf(ctx))
+  // Endpoint and catalog fall back to the sibling route an operator already
+  // configured, so a deployment that reaches a model needs no value here. The
+  // read is cached because `options()` runs once per request, and is only
+  // pinned once the editor is mounted: an early read must not freeze an empty
+  // answer for the rest of the process.
+  let inheritedSource: InheritedConnection | undefined
+  const inherited = (): InheritedConnection => {
+    if (inheritedSource !== undefined) return inheritedSource
+    const read = readInheritedConnection(ctx)
+    if (ctx.get('configEditor') !== undefined) inheritedSource = read
+    return read
+  }
+  const options = () => {
+    const base = plainOptions(config)
+    const source = inherited()
+    return resolveAdapterOptions(
+      { ...base, models: resolveModels(base.models ?? [], source) },
+      launchEnvironmentOf(ctx),
+      source,
+    )
+  }
   options()
   const resolveApiKey = async (connection: ResolvedAgentHintOptions): Promise<string | undefined> => {
     const ref = connection.apiKeyEnv
@@ -151,6 +173,8 @@ export function apply(ctx: Context, config: Config): void {
   const registration = ctx.llm.registerAdapter([provider], adapter)
   let retryPolicy = JSON.stringify(options().retryPolicy)
   ctx.on('loader/volatile-update', () => {
+    // A sibling route may have just been reconfigured; re-read before deciding.
+    inheritedSource = undefined
     const current = JSON.stringify(options().retryPolicy)
     if (current !== retryPolicy) { registration.replace([provider]); retryPolicy = current }
   })

@@ -5,7 +5,7 @@ import { credentialRef, type CredentialRef } from '@deepseek-ai/dsh-credentials'
 import type { LaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { deepSeekConfigFields, plainOptions as protocolOptions, resolveAdapterOptions as resolveProtocolOptions } from '@deepseek-ai/dsh-llm-deepseek'
-import type { Config as ProtocolConfig, DeepSeekConnectionOptions, Options as ProtocolOptions } from '@deepseek-ai/dsh-llm-deepseek'
+import type { Config as ProtocolConfig, DeepSeekCatalogModel, DeepSeekConnectionOptions, Options as ProtocolOptions } from '@deepseek-ai/dsh-llm-deepseek'
 import { DEFAULT_CONTROL_RETRIES, DEFAULT_CONTROL_TIMEOUT_MS } from './control-client.ts'
 import { DEFAULT_PENDING_OP_AWAIT_MS } from './lifecycle-bridge.ts'
 import type { AgentHintCacheControl } from './types.ts'
@@ -14,6 +14,24 @@ import type { AgentHintCacheControl } from './types.ts'
 export const DEFAULT_PROVIDER = 'deepseek-agent-hint'
 /** Coordinator Messages API root; the adapter appends `/v1/messages`. */
 export const DEFAULT_BASE_URL = 'http://127.0.0.1:1025'
+/** Environment variable consulted when neither configuration nor a sibling route names an endpoint. */
+export const BASE_URL_ENV = 'DSH_AGENT_HINT_BASE_URL'
+
+/**
+ * Connection facts a sibling DeepSeek route already resolved. An operator who
+ * can already talk to a model has, by construction, already named the endpoint
+ * this plugin needs; asking them to type it again is the entire configuration
+ * burden this shape removes.
+ */
+export interface InheritedConnection {
+  /** Endpoint of the sibling route, when it configured one. */
+  baseURL?: string | undefined
+  /** Model catalog of the sibling route, when it declared one. */
+  models?: readonly DeepSeekCatalogModel[] | undefined
+}
+
+/** No sibling route contributed anything; the identity value of {@link InheritedConnection}. */
+export const NO_INHERITED_CONNECTION: InheritedConnection = {}
 
 /** Session lifecycle control plane configuration. */
 export interface SessionControlConfig {
@@ -100,15 +118,59 @@ export function plainOptions(config: Config): Options {
   return { ...protocolOptions(config), ...apiKeyEnv === undefined ? {} : { apiKeyEnv } }
 }
 
+/** Resolve the coordinator endpoint through a fixed precedence chain.
+ *
+ * An explicit operator value always wins. The built-in loopback default is the
+ * last resort, so it must never mask an inherited route or the environment: the
+ * whole point of the chain is that a deployment which already reaches a model
+ * needs to configure nothing here.
+ *
+ * @param configured - the resolved plugin configuration value.
+ * @param inherited - endpoint facts read from a sibling route.
+ * @param environment - application launch environment.
+ * @returns the endpoint every request for this route should use.
+ */
+export function resolveBaseURL(
+  configured: string,
+  inherited: InheritedConnection = NO_INHERITED_CONNECTION,
+  environment?: LaunchEnvironmentSnapshot,
+): string {
+  if (configured !== DEFAULT_BASE_URL) return configured
+  const fromRoute = inherited.baseURL
+  if (fromRoute !== undefined && fromRoute.length > 0) return fromRoute
+  const fromEnvironment = environment?.get(BASE_URL_ENV)?.value
+  if (fromEnvironment !== undefined && fromEnvironment.length > 0) return fromEnvironment
+  return DEFAULT_BASE_URL
+}
+
+/** Resolve the model catalog: explicit configuration, then the sibling route's.
+ * @param configured - models declared on this plugin's own entry.
+ * @param inherited - model catalog read from a sibling route.
+ * @returns the catalog to advertise; empty when neither source declared one.
+ */
+export function resolveModels(
+  configured: DeepSeekCatalogModel[],
+  inherited: InheritedConnection = NO_INHERITED_CONNECTION,
+): DeepSeekCatalogModel[] {
+  if (configured.length > 0) return configured
+  const fromRoute = inherited.models
+  return fromRoute !== undefined && fromRoute.length > 0 ? [...fromRoute] : configured
+}
+
 /** Resolve route and protocol settings together.
  * @param config - raw deployment settings.
  * @param environment - application launch environment.
+ * @param inherited - endpoint facts read from a sibling route.
  * @returns validated endpoint facts and the matching credential reference, or `undefined` when the route names none.
  */
-export function resolveAdapterOptions(config: Options, environment?: LaunchEnvironmentSnapshot): ResolvedAgentHintOptions {
+export function resolveAdapterOptions(
+  config: Options,
+  environment?: LaunchEnvironmentSnapshot,
+  inherited: InheritedConnection = NO_INHERITED_CONNECTION,
+): ResolvedAgentHintOptions {
   const apiKeyEnv = config.apiKeyEnv
   return {
-    ...resolveProtocolOptions(config, environment),
+    ...resolveProtocolOptions({ ...config, baseURL: resolveBaseURL(config.baseURL ?? DEFAULT_BASE_URL, inherited, environment) }, environment),
     apiKeyEnv: apiKeyEnv === undefined ? undefined : credentialRef(apiKeyEnv),
   }
 }

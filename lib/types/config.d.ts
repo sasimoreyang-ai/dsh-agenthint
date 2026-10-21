@@ -3,12 +3,28 @@ import type { Volatile } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { type CredentialRef } from '@deepseek-ai/dsh-credentials';
 import type { LaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment';
-import type { Config as ProtocolConfig, DeepSeekConnectionOptions, Options as ProtocolOptions } from '@deepseek-ai/dsh-llm-deepseek';
+import type { Config as ProtocolConfig, DeepSeekCatalogModel, DeepSeekConnectionOptions, Options as ProtocolOptions } from '@deepseek-ai/dsh-llm-deepseek';
 import type { AgentHintCacheControl } from './types.ts';
 /** The provider route this plugin owns; read at plugin load. */
 export declare const DEFAULT_PROVIDER = "deepseek-agent-hint";
 /** Coordinator Messages API root; the adapter appends `/v1/messages`. */
 export declare const DEFAULT_BASE_URL = "http://127.0.0.1:1025";
+/** Environment variable consulted when neither configuration nor a sibling route names an endpoint. */
+export declare const BASE_URL_ENV = "DSH_AGENT_HINT_BASE_URL";
+/**
+ * Connection facts a sibling DeepSeek route already resolved. An operator who
+ * can already talk to a model has, by construction, already named the endpoint
+ * this plugin needs; asking them to type it again is the entire configuration
+ * burden this shape removes.
+ */
+export interface InheritedConnection {
+    /** Endpoint of the sibling route, when it configured one. */
+    baseURL?: string | undefined;
+    /** Model catalog of the sibling route, when it declared one. */
+    models?: readonly DeepSeekCatalogModel[] | undefined;
+}
+/** No sibling route contributed anything; the identity value of {@link InheritedConnection}. */
+export declare const NO_INHERITED_CONNECTION: InheritedConnection;
 /** Session lifecycle control plane configuration. */
 export interface SessionControlConfig {
     /** `false` disables manage requests; the static data plane keeps working. */
@@ -49,7 +65,7 @@ export interface Config extends ProtocolConfig {
 }
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     baseURL: z<string, string, "volatile-defined">;
-    models: z<NoInfer<import("@deepseek-ai/dsh-llm-deepseek").DeepSeekCatalogModel[]>, NoInfer<import("@deepseek-ai/dsh-llm-deepseek").DeepSeekCatalogModel[]>, "volatile-defined">;
+    models: z<NoInfer<DeepSeekCatalogModel[]>, NoInfer<DeepSeekCatalogModel[]>, "volatile-defined">;
     apiKeyEnv: z<string, string, "volatile">;
     provider: z<string, string, "defined">;
     agentHint: z<Schemastery.ObjectS<NoInfer<{
@@ -116,7 +132,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     mode: z<"inherit" | "standalone", "inherit" | "standalone", "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
     baseURL: z<string, string, "volatile-defined">;
-    models: z<NoInfer<import("@deepseek-ai/dsh-llm-deepseek").DeepSeekCatalogModel[]>, NoInfer<import("@deepseek-ai/dsh-llm-deepseek").DeepSeekCatalogModel[]>, "volatile-defined">;
+    models: z<NoInfer<DeepSeekCatalogModel[]>, NoInfer<DeepSeekCatalogModel[]>, "volatile-defined">;
     apiKeyEnv: z<string, string, "volatile">;
     provider: z<string, string, "defined">;
     agentHint: z<Schemastery.ObjectS<NoInfer<{
@@ -196,9 +212,29 @@ export interface ResolvedAgentHintOptions extends DeepSeekConnectionOptions {
  * @returns detached resolver inputs.
  */
 export declare function plainOptions(config: Config): Options;
+/** Resolve the coordinator endpoint through a fixed precedence chain.
+ *
+ * An explicit operator value always wins. The built-in loopback default is the
+ * last resort, so it must never mask an inherited route or the environment: the
+ * whole point of the chain is that a deployment which already reaches a model
+ * needs to configure nothing here.
+ *
+ * @param configured - the resolved plugin configuration value.
+ * @param inherited - endpoint facts read from a sibling route.
+ * @param environment - application launch environment.
+ * @returns the endpoint every request for this route should use.
+ */
+export declare function resolveBaseURL(configured: string, inherited?: InheritedConnection, environment?: LaunchEnvironmentSnapshot): string;
+/** Resolve the model catalog: explicit configuration, then the sibling route's.
+ * @param configured - models declared on this plugin's own entry.
+ * @param inherited - model catalog read from a sibling route.
+ * @returns the catalog to advertise; empty when neither source declared one.
+ */
+export declare function resolveModels(configured: DeepSeekCatalogModel[], inherited?: InheritedConnection): DeepSeekCatalogModel[];
 /** Resolve route and protocol settings together.
  * @param config - raw deployment settings.
  * @param environment - application launch environment.
+ * @param inherited - endpoint facts read from a sibling route.
  * @returns validated endpoint facts and the matching credential reference, or `undefined` when the route names none.
  */
-export declare function resolveAdapterOptions(config: Options, environment?: LaunchEnvironmentSnapshot): ResolvedAgentHintOptions;
+export declare function resolveAdapterOptions(config: Options, environment?: LaunchEnvironmentSnapshot, inherited?: InheritedConnection): ResolvedAgentHintOptions;
