@@ -43,6 +43,8 @@ export interface AgentHintConfig {
 
 /** Messages configuration for the agent-hint route, with an optional per-request credential reference. */
 export interface Config extends ProtocolConfig {
+  /** Reuse host Messages providers by default; standalone owns a coordinator route. */
+  mode: 'inherit' | 'standalone'
   /**
    * Credential reference resolved per request. `undefined` (the default) leaves
    * the route deliberately unauthenticated: requests carry no `authorization` header.
@@ -55,6 +57,7 @@ export interface Config extends ProtocolConfig {
 }
 
 export const Config = z.object({
+  mode: z.union(['inherit', 'standalone']).default('inherit'),
   ...deepSeekConfigFields,
   baseURL: z.string().default(DEFAULT_BASE_URL).volatile(),
   models: deepSeekConfigFields.models.default([]),

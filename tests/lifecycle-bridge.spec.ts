@@ -62,6 +62,47 @@ function makeBridge(): { bridge: LifecycleBridge; calls: RecordedCall[] } {
 }
 
 describe('LifecycleBridge', () => {
+  it('queues resume after a delayed pause and waits for the entire session queue', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const calls: string[] = []
+    const bridge = new LifecycleBridge({ pendingOpAwaitMs: 1000, client: {
+      send: async (verb: string) => {
+        calls.push(`begin:${verb}`)
+        if (verb === 'pause') await gate
+        calls.push(`end:${verb}`)
+      },
+    } as SessionControlClient })
+    bridge.noteOrdinaryRequest(SID, 'model-a')
+    bridge.noteOrdinaryRequest(OTHER, 'model-b')
+    bridge.onSessionComposing(SID)
+    let dataAllowed = false
+    const barrier = bridge.awaitPendingOp(SID).then(() => { dataAllowed = true })
+    await Promise.resolve()
+    expect(calls).toEqual(['begin:pause'])
+    expect(dataAllowed).toBe(false)
+    release(); await barrier
+    expect(calls).toEqual(['begin:pause', 'end:pause', 'begin:resume', 'end:resume'])
+    expect(dataAllowed).toBe(true)
+  })
+
+  it('does not delete a reopened session when its old stop settles', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const calls: string[] = []
+    const bridge = new LifecycleBridge({ pendingOpAwaitMs: 1000, client: {
+      send: async (verb: string) => { calls.push(verb); if (verb === 'stop') await gate },
+    } as SessionControlClient })
+    bridge.onSessionCreated(sessionOf())
+    bridge.noteOrdinaryRequest(SID, 'model-a')
+    bridge.onSessionDisposed(sessionOf())
+    bridge.onSessionCreated(sessionOf({ seeded: true, parentSession: PARENT }))
+    bridge.ensureResume(SID, 'model-a')
+    expect(calls).toEqual(['stop'])
+    release(); await bridge.awaitPendingOp(SID)
+    expect(calls).toEqual(['stop', 'resume'])
+    expect(bridge.facts(SID)).toMatchObject({ seeded: true, parentSessionId: PARENT })
+  })
   it('records a seeded session without sending resume until the first ordinary request', () => {
     const { bridge, calls } = makeBridge()
     bridge.onSessionCreated(sessionOf({ seeded: true }))
@@ -186,7 +227,7 @@ describe('LifecycleBridge', () => {
     expect(bridge.facts(SID)).toMatchObject({ seeded: false, firstOrdinarySent: true })
   })
 
-  it('sends resume for a paused fresh session even without a composer draft', () => {
+  it('sends resume for a paused fresh session even without a composer draft', async () => {
     const { bridge, calls } = makeBridge()
     bridge.onSessionCreated(sessionOf())
     bridge.noteOrdinaryRequest(SID, 'model-a')
@@ -194,6 +235,7 @@ describe('LifecycleBridge', () => {
     expect(calls).toEqual([{ verb: 'pause', sessionId: 'session-1', model: 'model-a' }])
 
     bridge.ensureResume(SID, 'model-a')
+    await bridge.awaitPendingOp(SID)
     expect(calls).toEqual([
       { verb: 'pause', sessionId: 'session-1', model: 'model-a' },
       { verb: 'resume', sessionId: 'session-1', model: 'model-a' },
@@ -259,18 +301,20 @@ describe('LifecycleBridge', () => {
     expect(calls).toEqual([{ verb: 'resume', sessionId: 'session-1', model: 'model-a' }])
   })
 
-  it('sends a second resume after a pause clears the resume-sent guard', () => {
+  it('sends a second resume after a pause clears the resume-sent guard', async () => {
     const { bridge, calls } = makeBridge()
     bridge.onSessionCreated(sessionOf({ seeded: true }))
     bridge.ensureResume(SID, 'model-a')
     bridge.noteOrdinaryRequest(SID, 'model-a')
     bridge.noteOrdinaryRequest(OTHER, 'model-b')
+    await bridge.awaitPendingOp(SID)
     expect(calls).toEqual([
       { verb: 'resume', sessionId: 'session-1', model: 'model-a' },
       { verb: 'pause', sessionId: 'session-1', model: 'model-a' },
     ])
 
     bridge.onSessionComposing(SID)
+    await bridge.awaitPendingOp(SID)
     expect(calls).toEqual([
       { verb: 'resume', sessionId: 'session-1', model: 'model-a' },
       { verb: 'pause', sessionId: 'session-1', model: 'model-a' },
@@ -278,7 +322,7 @@ describe('LifecycleBridge', () => {
     ])
   })
 
-  it('resumes a session that started fresh but has run a turn and been paused', () => {
+  it('resumes a session that started fresh but has run a turn and been paused', async () => {
     const { bridge, calls } = makeBridge()
     bridge.onSessionCreated(sessionOf())
     bridge.noteOrdinaryRequest(SID, 'model-a')
@@ -286,6 +330,7 @@ describe('LifecycleBridge', () => {
     expect(calls).toEqual([{ verb: 'pause', sessionId: 'session-1', model: 'model-a' }])
 
     bridge.onSessionComposing(SID)
+    await bridge.awaitPendingOp(SID)
     expect(calls).toEqual([
       { verb: 'pause', sessionId: 'session-1', model: 'model-a' },
       { verb: 'resume', sessionId: 'session-1', model: 'model-a' },
@@ -331,13 +376,14 @@ describe('LifecycleBridge', () => {
     expect(calls).toEqual([{ verb: 'stop', sessionId: 'session-1', model: 'model-a' }])
   })
 
-  it('allows resume and another stop after a successful unarchive', () => {
+  it('allows resume and another stop after a successful unarchive', async () => {
     const { bridge, calls } = makeBridge()
     bridge.noteOrdinaryRequest(SID, 'model-a')
     bridge.onSessionArchived(SID)
     bridge.onSessionUnarchived(SID)
     bridge.onSessionComposing(SID)
     bridge.onSessionArchived(SID)
+    await bridge.awaitPendingOp(SID)
     expect(calls.map(call => call.verb)).toEqual(['stop', 'resume', 'stop'])
   })
 })

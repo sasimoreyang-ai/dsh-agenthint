@@ -1,4 +1,24 @@
-# 路径 B 实现与验证记录
+# 实现与验证记录
+
+## v0.2.0：默认复用现有模型（2026-10-21）
+
+默认安装改为 `mode: inherit`：通过官方扩展注册表给现有 DeepSeek Messages 请求添加 Hint，无需重新配置模型、地址、凭据或默认模型。完整独立控制保留在显式 `standalone` 模式。实现边界和设置机制调查见 [zero-config.md](docs/zero-config.md)。
+
+本次在 Windows 本地执行：
+
+- `npm run check`：类型检查及构建成功，11 个测试文件、71 项测试通过。
+- 使用实际 rc.1 Loader、API-key adapter、扩展注册表和 Session，捕获 localhost HTTP：原模型/凭据复用、动态更新、历史与 fork、失败重试、禁用和卸载均通过。
+- 独立模式回归：控制 URL/key 快照、每会话串行控制、归档/取消归档并发、旧 stop 完成后保留重开会话状态。
+- 浏览器构建 factory 测试：控制 Remote 不存在时不挂载草稿观察器；存在时保留仅 session ID 的通知。
+- `npm pack --json`：成功，包含新增 inherit 编译产物、默认 bundle 和设计文档。
+- 隔离 `DSH_HOME=.artifacts/v020-install`，通过真实 `dsh plugin --profile web add <tgz>` 安装成功。
+- 同一隔离 profile 的 `dsh web --dump-config` 成功：插件只有 `mode: inherit`，原 `agent-default-model` 仍为 `deepseek-official / deepseek-flash`。
+
+安装时 pnpm 报告缺少由宿主提供的 peer 包；`pnpm peers check` 在仅包含插件的 profile 目录中返回非零。本记录不把它写成“零警告安装”。宿主的包映射由 `dsh-app-boot` 的安装范围依赖收集/模块映射负责；profile 配置组合和上述真实服务集成已通过，但本次未进行完整浏览器启动交互验证。
+
+本次没有连接 node153，没有执行真实推理后端或性能实验；不以本地 fixture 结果证明远端 KV 生效。其他协议的 pi-ai 适配器未覆盖，默认模式不包含独立控制请求。
+
+## v0.1.0 历史记录：独立协调器模式
 
 日期：2026-10-21。交付包：@sasimoreyang-ai/dsh-llm-agent-hint 0.1.0。目标宿主：官方 npm DSH 0.2.0-rc.1。
 

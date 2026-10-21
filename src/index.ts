@@ -1,5 +1,7 @@
 /**
- * Register the `deepseek-agent-hint` provider route on `ctx.llm`: a DeepSeek
+ * By default, extend existing host Messages requests through the public
+ * extension registry, without registering or configuring a model provider.
+ * In explicit standalone mode, register the `deepseek-agent-hint` route: a DeepSeek
  * Messages transport aimed at a MindIE-Motor coordinator, whose ordinary
  * requests carry the `agent_hint` field (session identity, optional fork
  * lineage, optional cache policy) and whose session lifecycle events plus the
@@ -26,6 +28,7 @@ import { agentHintPrepareExtensions } from './extension.ts'
 import { DEFAULT_PENDING_OP_AWAIT_MS, LifecycleBridge } from './lifecycle-bridge.ts'
 import { observeArchives } from './archive-observer.ts'
 import { AgentHintSignals } from './composing-service.ts'
+import { installInheritedHints } from './inherit.ts'
 import type {} from '@deepseek-ai/dsh-api-gateway'
 
 export { buildAgentHint } from './agent-hint.ts'
@@ -44,6 +47,10 @@ export const name = 'llm-agent-hint'
 export const inject = ['llm']
 
 export function apply(ctx: Context, config: Config): void {
+  if (config.mode === 'inherit') {
+    if (config.agentHint?.enabled !== false) installInheritedHints(ctx, config.agentHint?.cacheControl ?? undefined)
+    return
+  }
   const provider = config.provider
   const options = () => resolveAdapterOptions(plainOptions(config), launchEnvironmentOf(ctx))
   options()
@@ -73,6 +80,13 @@ export function apply(ctx: Context, config: Config): void {
       client: new SessionControlClient({
         endpoint: sessionControl?.endpoint ?? `${options().baseURL.replace(/\/+$/, '')}/v1/chat/completions`,
         resolveApiKey: async () => resolveApiKey(options()),
+        resolveConnection: async () => {
+          const connection = options()
+          return {
+            endpoint: sessionControl?.endpoint ?? `${connection.baseURL.replace(/\/+$/, '')}/v1/chat/completions`,
+            apiKey: await resolveApiKey(connection),
+          }
+        },
         model: options().models[0]?.id ?? 'default',
         timeoutMs: sessionControl?.controlTimeoutMs ?? DEFAULT_CONTROL_TIMEOUT_MS,
         retries: sessionControl?.retries ?? DEFAULT_CONTROL_RETRIES,
@@ -82,6 +96,7 @@ export function apply(ctx: Context, config: Config): void {
         },
       }),
       pendingOpAwaitMs: sessionControl?.pendingOpAwaitMs ?? DEFAULT_PENDING_OP_AWAIT_MS,
+      warn: message => ctx.logger.warn(message),
     })
     : undefined
   bridge?.subscribe(ctx)
@@ -104,7 +119,7 @@ export function apply(ctx: Context, config: Config): void {
   const cacheControl = config.agentHint?.cacheControl ?? undefined
 
   ctx.llm.registerConfigurableProviders([
-    { provider, displayName: 'DeepSeek (agent-hint)', settingsNs: ctx.fiber.entry?.options.id ?? name, settingsPath: [] },
+    { provider, displayName: 'DeepSeek (agent-hint)', settingsNs: ctx.fiber.entry?.options.id ?? name, settingsPath: [], declared: true },
   ])
   const chained = (request: Parameters<ReturnType<typeof agentHintPrepareExtensions>>[0]) =>
     ctx.get('deepseekLlmApiExtensions')?.prepare(request)

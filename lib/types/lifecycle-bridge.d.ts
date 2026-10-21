@@ -43,6 +43,7 @@ export declare class LifecycleBridge {
     private readonly options;
     private readonly states;
     private lastOrdinarySessionId;
+    private disposed;
     constructor(options: LifecycleBridgeOptions);
     /**
      * Register the six lifecycle listeners on one context.
@@ -124,7 +125,7 @@ export declare class LifecycleBridge {
      */
     onSessionEvent(session: Session, event: SessionEvent): void;
     /**
-     * `session/disposed`: terminal evict; fire-and-forget with no barrier.
+     * `session/disposed`: terminal evict queued after prior controls; cleanup is generation-safe.
      * @param session - the session being disposed.
      */
     onSessionDisposed(session: Session): void;

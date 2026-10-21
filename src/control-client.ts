@@ -22,6 +22,8 @@ export interface ControlWarnSink {
 
 /** Validated facts for the control plane; resolved once per plugin load. */
 export interface SessionControlClientOptions {
+  /** Optional atomic connection snapshot, retained across this operation's retries. */
+  resolveConnection?: () => Promise<{ endpoint: string; apiKey: string | undefined }>
   /** Full manage-request URL; the coordinator's chat-completions infer endpoint. */
   endpoint: string
   /** Resolves the bearer token for one manage request; `undefined` sends it unauthenticated. */
@@ -75,6 +77,15 @@ export class SessionControlClient {
       this.options.warn?.('llm-agent-hint: "start" is a data-plane piggyback verb; it is never sent as a manage request')
       return
     }
+    let connection: { endpoint: string; apiKey: string | undefined }
+    try {
+      connection = this.options.resolveConnection === undefined
+        ? { endpoint: this.options.endpoint, apiKey: await this.options.resolveApiKey() }
+        : await this.options.resolveConnection()
+    } catch (error) {
+      this.options.warn?.('llm-agent-hint: could not resolve control connection', error)
+      return
+    }
     const body = JSON.stringify({
       model: model ?? this.options.model,
       messages: [],
@@ -89,7 +100,7 @@ export class SessionControlClient {
     // restart produces; every other failure is terminal for this verb.
     while (attempt <= this.options.retries) {
       attempt += 1
-      const outcome = await this.attempt(body, verb, sessionId, signal)
+      const outcome = await this.attempt(body, verb, sessionId, connection, signal)
       if (outcome === 'sent' || signal?.aborted) return
       if (attempt > this.options.retries) return
       await sleep(200, signal)
@@ -100,12 +111,13 @@ export class SessionControlClient {
     body: string,
     verb: SessionControlVerb,
     sessionId: string,
+    connection: { endpoint: string; apiKey: string | undefined },
     signal?: AbortSignal,
   ): Promise<'sent' | 'failed'> {
     const timeout = AbortSignal.timeout(this.options.timeoutMs)
     try {
-      const key = await this.options.resolveApiKey()
-      const response = await fetch(this.options.endpoint, {
+      const key = connection.apiKey
+      const response = await fetch(connection.endpoint, {
         method: 'POST',
         headers: {
           ...key === undefined ? {} : { 'authorization': `Bearer ${key}` },
@@ -126,7 +138,7 @@ export class SessionControlClient {
       return 'sent'
     } catch (error: unknown) {
       this.options.warn?.(
-        `llm-agent-hint: session_control "${verb}" for session ${sessionId} failed to reach ${this.options.endpoint}`,
+        `llm-agent-hint: session_control "${verb}" for session ${sessionId} failed to reach ${connection.endpoint}`,
         error,
       )
       return 'failed'

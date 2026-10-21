@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { readFile } from 'node:fs/promises'
 import { runInNewContext } from 'node:vm'
 import { createRequire } from 'node:module'
@@ -38,6 +38,9 @@ describe('shipped browser factory', () => {
         'conversation.input.overlay': { kind: 'list', scope: 'session' },
       } } as never, () => null)
       const fiber = await ctx.plugin(face)
+      expect(ctx.slots.entries('conversation.input.overlay')).toHaveLength(0)
+      ctx.provide('remote.agentHintSignals', {} as never)
+      await vi.waitFor(() => expect(ctx.slots.entries('conversation.input.overlay')).toHaveLength(1))
       const entries = ctx.slots.entries('conversation.input.overlay')
       expect(entries).toHaveLength(1)
       const entry = entries[0]

@@ -37,7 +37,7 @@ export interface AgentHintWire {
 }
 declare module '@deepseek-ai/dsh-deepseek-llm-api-extensions' {
     interface DeepSeekLlmApiExtensionMap {
-        /** MindIE-Motor session hint; the `deepseek-agent-hint` route owns this field. */
+        /** MindIE-Motor hint, contributed globally in inherit mode or by the standalone route. */
         agent_hint: AgentHintWire;
     }
 }

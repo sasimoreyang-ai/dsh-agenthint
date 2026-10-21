@@ -1,6 +1,7 @@
 # Replace address/model, then pass through dsh web --patch <this-file>.
 - id: llm-agent-hint
   config:
+    mode: standalone
     provider: deepseek-agent-hint
     baseURL: http://127.0.0.1:1025
     models:

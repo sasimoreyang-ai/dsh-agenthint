@@ -15,6 +15,14 @@ function registry() {
   }
 }
 describe('public archive observer', () => {
+  it('observes an immediate archive/unarchive pair in committed order', async () => {
+    const host = registry(), events: string[] = []
+    const off = observeArchives(host, () => events.push('archive'), () => events.push('unarchive'))
+    await Promise.all([host.archiveSession(SID), host.unarchiveSession(SID)])
+    expect(events).toEqual(['archive', 'unarchive'])
+    expect(host.archivedSessionIds).toEqual([])
+    off()
+  })
   it('observes committed transitions and restores exact original methods', async () => {
     const host = registry(), archived = vi.fn(), unarchived = vi.fn()
     const original = host.archiveSession

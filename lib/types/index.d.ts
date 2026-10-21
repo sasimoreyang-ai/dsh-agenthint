@@ -1,5 +1,7 @@
 /**
- * Register the `deepseek-agent-hint` provider route on `ctx.llm`: a DeepSeek
+ * By default, extend existing host Messages requests through the public
+ * extension registry, without registering or configuring a model provider.
+ * In explicit standalone mode, register the `deepseek-agent-hint` route: a DeepSeek
  * Messages transport aimed at a MindIE-Motor coordinator, whose ordinary
  * requests carry the `agent_hint` field (session identity, optional fork
  * lineage, optional cache policy) and whose session lifecycle events plus the

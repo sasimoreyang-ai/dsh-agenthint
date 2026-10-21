@@ -18,6 +18,11 @@ export interface ControlWarnSink {
 }
 /** Validated facts for the control plane; resolved once per plugin load. */
 export interface SessionControlClientOptions {
+    /** Optional atomic connection snapshot, retained across this operation's retries. */
+    resolveConnection?: () => Promise<{
+        endpoint: string;
+        apiKey: string | undefined;
+    }>;
     /** Full manage-request URL; the coordinator's chat-completions infer endpoint. */
     endpoint: string;
     /** Resolves the bearer token for one manage request; `undefined` sends it unauthenticated. */

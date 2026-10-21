@@ -5,7 +5,9 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { DraftObserver } from './observer.ts'
 
 export const name = 'agent-hint-composer'
-export const inject = ['slots']
+// The host publishes this namespace only when standalone control is active.
+// Inherit mode must not send draft RPCs to a missing control service.
+export const inject = ['slots', 'remote.agentHintSignals']
 
 /**
  * Install advisory notifications through the existing authenticated Connection.

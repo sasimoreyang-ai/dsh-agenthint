@@ -22,12 +22,12 @@ afterEach(async () => {
 describe('built plugin on stock rc.1 Loader and services', () => {
   it('sends start/pause/resume/compact/stop through real transports without core events', async () => {
     vi.stubEnv('DSH_HOME', await mkdtemp(join(tmpdir(), 'dsh-agenthint-test-')))
-    const requests: { path: string; body: Record<string, any> }[] = []
+    const requests: { path: string; key?: string; body: Record<string, any> }[] = []
     server = createServer(async (req, res) => {
       const chunks = []; for await (const chunk of req) chunks.push(chunk)
       const body = JSON.parse(Buffer.concat(chunks).toString())
-      requests.push({ path: req.url!, body })
-      if (req.url === '/v1/chat/completions') {
+      requests.push({ path: req.url!, key: req.headers.authorization, body })
+      if (req.url?.endsWith('/v1/chat/completions')) {
         res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{}'); return
       }
       res.writeHead(200, { 'Content-Type': 'text/event-stream' })
@@ -46,6 +46,7 @@ describe('built plugin on stock rc.1 Loader and services', () => {
     if (typeof address === 'string') throw new Error('Expected TCP listener')
     const baseURL = `http://127.0.0.1:${address.port}`
     ctx = new Context()
+    ctx.provide('credentials', { resolve: async (ref: string) => ({ value: `fixture-${ref}` }) } as never)
     await ctx.plugin(SessionStore)
     // The external durable medium is controlled; archive logic and its Cordis
     // service receiver are the actual published WorkspaceRegistry implementation.
@@ -61,12 +62,13 @@ describe('built plugin on stock rc.1 Loader and services', () => {
     await ctx.plugin(TypertGatewayService)
     await ctx.plugin(Loader, { baseUrl: pathToFileURL(process.cwd() + '/').href })
     const loader = ctx.loader
-    await loader.root.update([
+    const entries = [
       { id: 'llm', name: '@deepseek-ai/dsh-llm' },
       { id: 'hint', name: pathToFileURL(join(process.cwd(), 'lib/types/index.js')).href,
-        config: { baseURL, models: [{ id: 'fixture' }], thinking: 'disabled',
+        config: { mode: 'standalone', baseURL, apiKeyEnv: 'A', models: [{ id: 'fixture' }], thinking: 'disabled',
           agentHint: { sessionControl: { retries: 0 } } } },
-    ])
+    ]
+    await loader.root.update(entries)
     await loader.await()
     expect(ctx.llm.listProviders().some(p => p.id === 'deepseek-agent-hint')).toBe(true)
     const a = ctx.sessions.create(SessionId('fixture-a'))
@@ -98,6 +100,23 @@ describe('built plugin on stock rc.1 Loader and services', () => {
     const controls = requests.filter(r => r.path === '/v1/chat/completions')
     expect(controls.filter(r => r.body.agent_hint.session_control.type === 'resume')).toHaveLength(1)
     expect(controls.every(r => r.body.messages.length === 0)).toBe(true)
+    // Public registry operations queued concurrently must preserve both transitions.
+    await ctx.workspaceRegistry.unarchiveSession(a.id)
+    await Promise.all([ctx.workspaceRegistry.archiveSession(a.id), ctx.workspaceRegistry.unarchiveSession(a.id)])
+    expect(ctx.workspaceRegistry.archivedSessionIds).not.toContain(a.id)
+    const resumesBefore = requests.filter(r => r.body.agent_hint?.session_control?.type === 'resume').length
+    await ctx.typertGateway.invoke({ namespace: 'agentHintSignals', method: 'composing', args: { request: { sessionId: a.id } } })
+    await vi.waitFor(() => expect(requests.filter(r => r.body.agent_hint?.session_control?.type === 'resume').length).toBe(resumesBefore + 1))
+    // Volatile connection changes must keep endpoint and credential together.
+    const updated = entries.map(entry => entry.id === 'hint'
+      ? { ...entry, config: { ...entry.config, baseURL: `${baseURL}/changed`, apiKeyEnv: 'B' } }
+      : entry)
+    await loader.root.update(updated); await loader.await()
+    await run(a.id)
+    ctx.emit('session/event', a, { type: 'compaction/end', data: { compactionId: 'fixture-d', turn: 2 }, time: 2, seq: 2 } as never)
+    await vi.waitFor(() => expect(requests.some(r => r.path === '/changed/v1/chat/completions'
+      && r.key === 'Bearer fixture-B' && r.body.agent_hint?.session_control?.type === 'compact')).toBe(true))
+    expect(requests.some(r => !r.path.startsWith('/changed/') && r.key === 'Bearer fixture-B')).toBe(false)
     loader.remove('hint'); await loader.await()
     await vi.waitFor(() => expect(ctx!.get('agentHintSignals')).toBeUndefined())
     expect(Object.hasOwn(ctx.workspaceRegistry, 'archiveSession')).toBe(false)

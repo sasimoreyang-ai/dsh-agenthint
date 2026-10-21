@@ -46,6 +46,24 @@ describe('SessionControlClient', () => {
     expect(warnings.map(([message]) => message)[0]).toContain('start')
   })
 
+  it('keeps one endpoint/key snapshot across retries and refreshes it for the next operation', async () => {
+    let generation = 'A'
+    const resolveConnection = vi.fn(async () => ({ endpoint: `http://${generation}.test/control`, apiKey: generation }))
+    const transport = new SessionControlClient({
+      endpoint: 'http://unused.test', resolveApiKey: async () => 'unused',
+      resolveConnection, model: 'm', timeoutMs: 1000, retries: 1,
+    })
+    fetchMock.mockImplementationOnce(async () => { generation = 'B'; return jsonResponse(503) })
+    fetchMock.mockImplementation(async () => jsonResponse(200))
+    await transport.send('compact', 'session-1')
+    await transport.send('resume', 'session-1')
+    expect(fetchMock.mock.calls.map(([url, init]) => [url, init.headers.authorization])).toEqual([
+      ['http://A.test/control', 'Bearer A'], ['http://A.test/control', 'Bearer A'],
+      ['http://B.test/control', 'Bearer B'],
+    ])
+    expect(resolveConnection).toHaveBeenCalledTimes(2)
+  })
+
   it('posts the verb as an empty-messages agent_hint request', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(200))
     await client().send('compact', 'session-1', 'last-model')

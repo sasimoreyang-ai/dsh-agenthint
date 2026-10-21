@@ -1,5 +1,7 @@
 # 路径 B：纯插件补充触发源
 
+本文描述独立协调器控制能力。v0.2.0 中需要显式 `mode: standalone`；默认安装复用已有模型，见 [zero-config.md](zero-config.md)。
+
 2026-10-21；目标为 npm 发布的 DSH **0.2.0-rc.1**。官方源码 checkout 已到 rc.2，含既有改动，未修改；参考 fork 也未修改。
 
 ## 三个未知的结论

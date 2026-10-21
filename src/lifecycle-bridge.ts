@@ -65,6 +65,7 @@ interface SessionState {
 export class LifecycleBridge {
   private readonly states = new Map<string, SessionState>()
   private lastOrdinarySessionId: string | undefined
+  private disposed = false
 
   constructor(private readonly options: LifecycleBridgeOptions) {}
 
@@ -84,6 +85,7 @@ export class LifecycleBridge {
 
   /** Drop all tracked state (plugin teardown). */
   dispose(): void {
+    this.disposed = true
     this.states.clear()
     this.lastOrdinarySessionId = undefined
   }
@@ -118,7 +120,10 @@ export class LifecycleBridge {
     if (pending === undefined) return
     let timer: ReturnType<typeof setTimeout> | undefined
     const expiry = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, this.options.pendingOpAwaitMs)
+      timer = setTimeout(() => {
+        this.options.warn?.('llm-agent-hint: control barrier timed out; backend outcome remains unknown')
+        resolve()
+      }, this.options.pendingOpAwaitMs)
     })
     try {
       await Promise.race([pending, expiry])
@@ -159,7 +164,10 @@ export class LifecycleBridge {
    */
   onSessionCreated(session: Session): void {
     const id = String(session.id)
+    const pending = this.states.get(id)?.pendingOp
+    this.states.delete(id)
     const state = this.state(id)
+    state.pendingOp = pending
     state.seeded = this.hasSeededConversation(session)
     state.resumeSent = false
     state.agentStatus = 'idle'
@@ -195,7 +203,7 @@ export class LifecycleBridge {
     if (state === undefined || !(state.seeded || state.pauseSent) || state.resumeSent) return
     state.resumeSent = true
     state.lastModel = model
-    this.track(id, this.options.client.send('resume', id, model))
+    this.track(id, () => this.options.client.send('resume', id, model))
   }
 
   /**
@@ -233,11 +241,12 @@ export class LifecycleBridge {
     const id = String(session.id)
     const state = this.states.get(id)
     if (state?.lastModel === undefined) return
-    this.track(id, this.options.client.send('compact', id, state?.lastModel))
+    const model = state.lastModel
+    this.track(id, () => this.options.client.send('compact', id, model))
   }
 
   /**
-   * `session/disposed`: terminal evict; fire-and-forget with no barrier.
+   * `session/disposed`: terminal evict queued after prior controls; cleanup is generation-safe.
    * @param session - the session being disposed.
    */
   onSessionDisposed(session: Session): void {
@@ -245,8 +254,14 @@ export class LifecycleBridge {
     if (this.lastOrdinarySessionId === id) this.lastOrdinarySessionId = undefined
     const state = this.states.get(id)
     if (state?.lastModel === undefined) { this.states.delete(id); return }
-    if (state.archived) { this.states.delete(id); return }
-    void this.options.client.send('stop', id, state?.lastModel)
+    if (state.archived) {
+      void (state.pendingOp ?? Promise.resolve()).then(() => {
+        if (this.states.get(id) === state) this.states.delete(id)
+      })
+      return
+    }
+    const model = state.lastModel
+    void this.track(id, () => this.options.client.send('stop', id, model))
       .then(() => { if (this.states.get(id) === state) this.states.delete(id) })
   }
 
@@ -264,7 +279,8 @@ export class LifecycleBridge {
     state.pauseSent = true
     state.resumeSent = false
     if (this.lastOrdinarySessionId === id) this.lastOrdinarySessionId = undefined
-    void this.options.client.send('stop', id, state?.lastModel)
+    const model = state.lastModel
+    this.track(id, () => this.options.client.send('stop', id, model))
   }
 
   /** Allow another archive cycle after the host successfully unarchives the session.
@@ -288,7 +304,8 @@ export class LifecycleBridge {
     state.pausePending = false
     state.pauseSent = true
     state.resumeSent = false
-    void this.options.client.send('pause', id, state.lastModel)
+    const model = state.lastModel
+    this.track(id, () => this.options.client.send('pause', id, model))
   }
 
   private state(id: string): SessionState {
@@ -311,11 +328,16 @@ export class LifecycleBridge {
     return state
   }
 
-  private track(id: string, promise: Promise<void>): void {
+  private track(id: string, send: () => Promise<void>): Promise<void> {
     const state = this.state(id)
-    const tracked = promise.finally(() => {
+    const dispatch = () => this.disposed ? Promise.resolve() : send()
+    const promise = state.pendingOp === undefined ? dispatch() : state.pendingOp.then(dispatch)
+    const tracked = promise.catch(error => {
+      this.options.warn?.('llm-agent-hint: control operation failed', error)
+    }).finally(() => {
       if (state.pendingOp === tracked) state.pendingOp = undefined
     })
     state.pendingOp = tracked
+    return tracked
   }
 }
