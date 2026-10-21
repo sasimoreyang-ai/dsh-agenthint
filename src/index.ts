@@ -1,17 +1,18 @@
 /**
- * By default, extend existing host Messages requests through the public
- * extension registry, without registering or configuring a model provider.
- * In explicit standalone mode, register the `deepseek-agent-hint` route: a DeepSeek
- * Messages transport aimed at a MindIE-Motor coordinator, whose ordinary
- * requests carry the `agent_hint` field (session identity, optional fork
- * lineage, optional cache policy) and whose session lifecycle events plus the
- * first ordinary request of a seeded session drive standalone
- * `session_control` manage requests (`resume`/`pause`/`compact`/`stop`)
- * against the coordinator's chat-completions infer endpoint.
- * The transport layer is the `llm-deepseek` pipeline with a route-scoped
- * `prepareExtensions`; connection facts resolve per request exactly as in
- * `llm-deepseek`, an omitted `apiKeyEnv` sends requests unauthenticated, and
- * every control-plane failure is fail-open (WARN only).
+ * Register the `deepseek-agent-hint` route: a DeepSeek Messages transport aimed
+ * at a MindIE-Motor coordinator, whose ordinary requests carry the `agent_hint`
+ * field (session identity, optional fork lineage, optional cache policy) and
+ * whose session lifecycle events plus the first ordinary request of a seeded
+ * session drive `session_control` manage requests
+ * (`resume`/`pause`/`compact`/`stop`) against the coordinator chat-completions
+ * infer endpoint.
+ *
+ * The endpoint and model catalog fall back to the sibling DeepSeek route, so an
+ * operator who already reaches a model configures nothing here. The transport
+ * layer is the `llm-deepseek` pipeline with a route-scoped `prepareExtensions`;
+ * connection facts resolve per request exactly as in `llm-deepseek`, an omitted
+ * `apiKeyEnv` sends requests unauthenticated, and every control-plane failure
+ * is fail-open (WARN only).
  * @module @deepseek-ai/dsh-llm-agent-hint
  */
 
@@ -29,7 +30,6 @@ import { agentHintPrepareExtensions } from './extension.ts'
 import { DEFAULT_PENDING_OP_AWAIT_MS, LifecycleBridge } from './lifecycle-bridge.ts'
 import { observeArchives } from './archive-observer.ts'
 import { AgentHintSignals } from './composing-service.ts'
-import { installInheritedHints } from './inherit.ts'
 import type {} from '@deepseek-ai/dsh-api-gateway'
 
 export { buildAgentHint } from './agent-hint.ts'
@@ -49,10 +49,7 @@ export const name = 'llm-agent-hint'
 export const inject = ['llm']
 
 export function apply(ctx: Context, config: Config): void {
-  if (config.mode === 'inherit') {
-    if (config.agentHint?.enabled !== false) installInheritedHints(ctx, config.agentHint?.cacheControl ?? undefined)
-    return
-  }
+
   const provider = config.provider
   // Endpoint and catalog fall back to the sibling route an operator already
   // configured, so a deployment that reaches a model needs no value here. The

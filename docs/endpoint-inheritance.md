@@ -4,12 +4,11 @@
 
 ## 问题
 
-`mode: standalone` 提供完整控制面（`start`/`pause`/`resume`/`stop`），但需要三项配置：
+插件提供完整控制面（`start`/`pause`/`resume`/`stop`），历史上需要三项配置：
 
 ```yaml
 - id: llm-agent-hint
   config:
-    mode: standalone
     provider: deepseek-agent-hint
     baseURL: http://192.168.41.153:1025   # 协调器地址
     models:                                # 模型列表
@@ -84,7 +83,6 @@ interface ConfigurationRow {
 - **继承的是端点与模型目录，不继承凭据。** 本插件默认不发送 `authorization`；协调器若需要鉴权，仍须配置 `apiKeyEnv`。
 - **继承不改变路由归属。** 本插件仍注册自己的 provider `deepseek-agent-hint`，与源路由并存，互不影响。
 - **源路由不存在时静默回退。** 没有 `llm-deepseek` 条目、编辑器抛错、字段类型不符，全部返回空结果，不报错。
-- **`mode: inherit` 不受影响。** 该模式本就不注册 provider，不读取端点。
 
 ## 验证
 
@@ -109,4 +107,4 @@ interface ConfigurationRow {
 ## 未覆盖
 
 - 真机上「用户从未配置过任何模型」的场景：此时继承无源可读，仍需显式配置或环境变量。这属于部署前提，不是插件可以消除的。
-- `docs/zero-config.md` 中记录的 `session id None` 现象与本改动无关，属引擎侧会话挂载问题，另行跟踪。
+- 经 DSH 的 Messages 协议发出的请求，在测试的协调器上拿不到可卸载的块；该现象属引擎侧，与本改动无关，另行跟踪。

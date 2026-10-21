@@ -1,8 +1,41 @@
 # 实现与验证记录
 
-## v0.2.0：默认复用现有模型（2026-10-21）
+## v0.4.0：移除 inherit 模式，端点改为继承（2026-10-21）
 
-默认安装改为 `mode: inherit`：通过官方扩展注册表给现有 DeepSeek Messages 请求添加 Hint，无需重新配置模型、地址、凭据或默认模型。完整独立控制保留在显式 `standalone` 模式。实现边界和设置机制调查见 [zero-config.md](docs/zero-config.md)。
+**移除 `mode: inherit`。** 该模式不发送独立控制请求，因而无法触发卸载与预取；而 v0.3.0 的端点继承已经让 standalone 模式同样不需要手写地址与模型，inherit 的主要理由消失。保留它会让用户以为「装了就有加速」。
+
+**新增端点与模型目录继承。** 插件条目不再包含 `baseURL` 与 `models`，二者从 `llm-deepseek` 路由读取，优先级为：显式配置 > 继承 > `DSH_AGENT_HINT_BASE_URL` > 内置默认。实现见 `src/inherited-connection.ts` 与 [docs/endpoint-inheritance.md](docs/endpoint-inheritance.md)。
+
+**修复客户端启动故障。** v0.2.0 把 `remote.agentHintSignals` 放进 `inject` 硬依赖，inherit 模式下该服务不存在，浏览器启动报 `1 entry did not activate`。改为 `ctx.inject` 运行时等待：条目立即激活，控制服务出现后才贡献插槽。
+
+本地验证（Windows）：
+
+- `npx tsc -b --force` 退出码 0
+- `npx vitest run`：11 个测试文件、85 项测试通过
+- `npm pack`：0.4.0 构建产物完整
+
+真机验证（node_153，Ascend 910B3 × 8 + MindIE-Motor）：
+
+- 插件条目零配置（只有 `agent_hint` 相关缺省），请求成功，证明继承生效
+- 五动词全部触发：`start` 22、`pause` 18、`resume` 11、`stop` 11、`compact` 1
+- 引擎四动作成功执行，每次 4,917 块
+
+**发现的引擎侧限制（未修复，属协调器）**：`/v1/messages` 路径不向 session-aware 管理器登记块记录，`/v1/chat/completions` 会。DSH 的 DeepSeek 适配器使用 Messages 协议，因此经 DSH 发出的请求拿不到可卸载的块。同一会话改用 `/v1/chat/completions` 播种后四动作立即成功：
+
+```
+offload  status=True  actual_op_block_num 4917
+prefetch status=True  actual_op_block_num 4917
+evict    status=True  actual_op_block_num 4917
+```
+
+该结论由同一容器、同一引擎补丁下的对照实验得出，唯一变量是请求端点。
+
+---
+
+## v0.2.0：默认复用现有模型（2026-10-21，已在 v0.4.0 移除）
+
+以下内容为历史记录。`mode: inherit` 已在 v0.4.0 移除，相关设计文档 `docs/zero-config.md` 一并删除。
+默认安装改为 `mode: inherit`：通过官方扩展注册表给现有 DeepSeek Messages 请求添加 Hint，无需重新配置模型、地址、凭据或默认模型。完整独立控制保留在显式 `standalone` 模式。实现边界和设置机制调查见当时的设计文档（已随该模式一并删除）。
 
 本次在 Windows 本地执行：
 

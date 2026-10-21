@@ -51,8 +51,6 @@ export interface AgentHintConfig {
 }
 /** Messages configuration for the agent-hint route, with an optional per-request credential reference. */
 export interface Config extends ProtocolConfig {
-    /** Reuse host Messages providers by default; standalone owns a coordinator route. */
-    mode: 'inherit' | 'standalone';
     /**
      * Credential reference resolved per request. `undefined` (the default) leaves
      * the route deliberately unauthenticated: requests carry no `authorization` header.
@@ -129,7 +127,6 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     fileRefreshMarginSeconds: z<number, number, "volatile-defined">;
     fileQuotaCleanupBatch: z<number, number, "volatile-defined">;
     retryPolicy: z<NoInfer<import("@deepseek-ai/dsh-llm").RetryPolicyConfig>, NoInfer<import("@deepseek-ai/dsh-llm").RetryPolicyConfig>, "volatile">;
-    mode: z<"inherit" | "standalone", "inherit" | "standalone", "defined">;
 }>>, Schemastery.ObjectT<NoInfer<{
     baseURL: z<string, string, "volatile-defined">;
     models: z<NoInfer<DeepSeekCatalogModel[]>, NoInfer<DeepSeekCatalogModel[]>, "volatile-defined">;
@@ -196,7 +193,6 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     fileRefreshMarginSeconds: z<number, number, "volatile-defined">;
     fileQuotaCleanupBatch: z<number, number, "volatile-defined">;
     retryPolicy: z<NoInfer<import("@deepseek-ai/dsh-llm").RetryPolicyConfig>, NoInfer<import("@deepseek-ai/dsh-llm").RetryPolicyConfig>, "volatile">;
-    mode: z<"inherit" | "standalone", "inherit" | "standalone", "defined">;
 }>>, "plain">;
 /** Plain deployment inputs for the agent-hint route. */
 export type Options = ProtocolOptions & {

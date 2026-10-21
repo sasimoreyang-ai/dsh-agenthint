@@ -1,6 +1,5 @@
-# Extend the existing Messages providers. No model or endpoint configuration.
+# Register the coordinator route. The endpoint and model catalog are inherited
+# from the sibling DeepSeek route, so installing this bundle configures nothing.
 - insert:
     - id: llm-agent-hint
       name: '@sasimoreyang-ai/dsh-llm-agent-hint'
-      config:
-        mode: inherit
