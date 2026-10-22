@@ -51,6 +51,9 @@
     "@deepseek-ai/schemastery": "~3.18.4",
     "@sasimoreyang-ai/agenthint-core": "0.6.0-rc.1"
   },
+  "bundleDependencies": [
+    "@sasimoreyang-ai/agenthint-core"
+  ],
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
     "@deepseek-ai/cordis-plugin-loader": "~1.0.5",
