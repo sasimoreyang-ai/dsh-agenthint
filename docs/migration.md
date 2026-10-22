@@ -64,7 +64,23 @@ dsh-agenthint/
 | 单 tarball 安装 | ✅ 通过 | 35 个包；Core 从 bundled 副本解析，运行期正常 |
 | 配对 tarball 安装 | ✅ 通过 | 36 个包；两者都解析到 `0.6.0-rc.1` |
 | 本地仓库安装 | ✅ 通过 | `import` 成功，bundled Core 就位 |
+| **DSH CLI profile 安装** | ✅ **通过** | `dsh plugin --profile verify-hl add <tarball>`：903 ms 完成，plugin 与 bundled Core 均为 `0.6.0-rc.1`，自动写入 bundles，真机冒烟测试通过 |
 | `github:` Git 安装 | ❌ **阻塞** | `@sasimoreyang-ai/agenthint-core@0.6.0-rc.1` 未发布，registry 返回 404 |
+
+CLI 安装的实测输出：
+
+```text
+$ dsh plugin --profile verify-hl add sasimoreyang-ai-dsh-llm-agent-hint-0.6.0-rc.1.tgz
+Progress: resolved 5, reused 1, downloaded 1, added 1, done
+Done in 903ms using pnpm v11.7.0
+
+plugin: 0.6.0-rc.1
+core  : 0.6.0-rc.1        # 从 bundled 副本解析
+bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless', '@sasimoreyang-ai/dsh-llm-agent-hint']
+```
+
+真机冒烟：headless 任务正常完成；引擎侧只出现 `/v1/chat/completions`，
+`session_control.type=start` 触发一次，会话注册为非 `None`，块分配正常。
 
 **Git 安装的阻塞是发布授权问题，不是代码缺陷。** 解除方式：先把 Core 精确版本发布到 registry，再发布插件。
 
