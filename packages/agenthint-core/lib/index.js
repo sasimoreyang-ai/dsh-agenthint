@@ -19,5 +19,5 @@
  * @module agenthint-core
  */
 export { AgentHintError, CONTROL_BARRIER_MESSAGE, controlBarrierError, isAgentHintError, } from "./errors.js";
-export { assertValidCacheControl, buildAgentHint } from "./hint.js";
+export { assertJsonValue, assertValidCacheControl, buildAgentHint } from "./hint.js";
 export { DEFAULT_PENDING_OP_AWAIT_MS, DEFAULT_RESUME_COOLDOWN_MS, HintCoordinator, } from "./coordinator.js";

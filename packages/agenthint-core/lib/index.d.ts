@@ -21,7 +21,7 @@
 export type { AgentHintCacheControl, AgentHintWire, ControlVerb, JsonObject, JsonValue, RequestClass, SessionControlVerb, } from './types.ts';
 export { AgentHintError, CONTROL_BARRIER_MESSAGE, controlBarrierError, isAgentHintError, } from './errors.ts';
 export type { AgentHintErrorCode } from './errors.ts';
-export { assertValidCacheControl, buildAgentHint } from './hint.ts';
+export { assertJsonValue, assertValidCacheControl, buildAgentHint } from './hint.ts';
 export type { HintInputs } from './hint.ts';
 export type { ControlCommand, ControlIntent, ControlReason, ControlResult, ControlTransport, WarnSink, } from './transport.ts';
 export { DEFAULT_PENDING_OP_AWAIT_MS, DEFAULT_RESUME_COOLDOWN_MS, HintCoordinator, } from './coordinator.ts';

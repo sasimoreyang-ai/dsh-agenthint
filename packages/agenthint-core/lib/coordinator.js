@@ -242,21 +242,30 @@ export class HintCoordinator {
         const sessionId = facts.sessionId;
         const ordinary = facts.requestClass === 'ordinary';
         const state = sessionId === undefined ? undefined : this.state(sessionId);
-        // Single-writer contract: two overlapping preparations on a session that has
-        // not yet declared `start` would both claim the verb. Reject the second one
-        // rather than let the backend see two competing first requests. Stream
-        // leases stay concurrent; only the hint declaration is single-writer.
-        if (ordinary && state !== undefined && !state.firstOrdinarySent && state.preparing > 0) {
-            throw new AgentHintError('AgentHint: another ordinary request is already preparing this session; '
-                + 'a session admits one unaccepted first request at a time.', 'INVALID_INPUT');
-        }
-        const release = ordinary
-            ? await this.beginOrdinary(sessionId, facts.model, facts.signal)
-            : () => { };
-        if (ordinary && state !== undefined)
-            state.preparing++;
+        // 1. Pure validation first. Nothing has been acquired yet, so a bad input
+        //    cannot leak a lease or wedge the session.
         const hint = this.buildHint(facts);
-        let accepted = false;
+        // 2. Reserve the preparation slot *before* the first await. Checking and
+        //    incrementing across an await would let two concurrent first requests
+        //    both observe zero and both claim `start`.
+        if (ordinary && state !== undefined) {
+            if (!state.firstOrdinarySent && state.preparing > 0) {
+                throw new AgentHintError('AgentHint: another ordinary request is already preparing this session; '
+                    + 'a session admits one unaccepted first request at a time.', 'INVALID_INPUT');
+            }
+            state.preparing++;
+        }
+        // 3. Acquire the stream lease; roll the reservation back on any failure.
+        let release;
+        try {
+            release = ordinary ? await this.beginOrdinary(sessionId, facts.model, facts.signal) : () => { };
+        }
+        catch (error) {
+            if (ordinary && state !== undefined && state.preparing > 0)
+                state.preparing--;
+            throw error;
+        }
+        let phase = 'preparing';
         let settled = false;
         const settlePreparation = () => {
             if (settled)
@@ -268,14 +277,19 @@ export class HintCoordinator {
         return {
             hint,
             accepted: () => {
-                if (accepted)
+                // A finished lease must not commit state: cancellation and a late
+                // acceptance can otherwise race and consume a `start` nobody sent.
+                if (phase !== 'preparing')
                     return;
-                accepted = true;
+                phase = 'accepted';
                 if (ordinary)
                     this.noteOrdinaryRequest(sessionId, facts.model);
                 settlePreparation();
             },
             finish: () => {
+                if (phase === 'finished')
+                    return;
+                phase = 'finished';
                 release();
                 settlePreparation();
             },
@@ -283,6 +297,13 @@ export class HintCoordinator {
     }
     /** Build the wire field for one request from current session facts. */
     buildHint(facts) {
+        // An unrecognised class must not silently fall through as "ordinary": the
+        // coordinator would skip the stream lease while the builder still emitted a
+        // `start`, so the two modules would disagree about the same request.
+        if (facts.requestClass !== 'ordinary' && facts.requestClass !== 'background') {
+            throw new AgentHintError(`AgentHint: unknown requestClass ${JSON.stringify(facts.requestClass)}; `
+                + "expected 'ordinary' or 'background'.", 'INVALID_INPUT');
+        }
         const view = this.facts(facts.sessionId);
         const inputs = {
             sessionId: facts.sessionId,
@@ -424,10 +445,13 @@ export class HintCoordinator {
             }
             return result;
         }, (error) => {
+            // A transport that throws cannot prove the command was never dispatched.
+            // Reporting `failed` would invite a caller to retry a mutation that may
+            // already have run, so surface the same uncertainty the quarantine uses.
             if (mutating)
                 state.unsafe = true;
             this.options.warn?.('agenthint-core: control operation failed', error);
-            return { status: 'failed', retryable: false };
+            return { status: 'unknown' };
         });
         const tracked = settled.then(() => { }, () => { }).finally(() => {
             if (mutating)

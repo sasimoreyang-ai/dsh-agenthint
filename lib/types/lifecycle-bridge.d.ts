@@ -21,7 +21,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { AgentStatus } from '@deepseek-ai/dsh-agent';
 import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session';
 import { LlmError } from '@deepseek-ai/dsh-llm';
-import { DEFAULT_PENDING_OP_AWAIT_MS } from '@sasimoreyang-ai/agenthint-core';
+import { DEFAULT_PENDING_OP_AWAIT_MS } from '../vendor/agenthint-core/index.js';
 import type { ControlResult, SessionControlClient } from './control-client.ts';
 import type { SessionControlVerb } from './types.ts';
 export { DEFAULT_PENDING_OP_AWAIT_MS };

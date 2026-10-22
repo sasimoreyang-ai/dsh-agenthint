@@ -3,7 +3,7 @@
   "version": "0.6.0-rc.1",
   "description": "Host-neutral AgentHint protocol core: wire types, hint construction, session coordinator, control transport contracts.",
   "type": "module",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "exports": {

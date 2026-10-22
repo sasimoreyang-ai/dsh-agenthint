@@ -10,8 +10,8 @@
  *
  * @module dsh-llm-agent-hint/control-client
  */
-import { DEFAULT_CONTROL_RETRIES, DEFAULT_CONTROL_TIMEOUT_MS } from '@sasimoreyang-ai/agenthint-core/http';
-import type { ControlResult } from '@sasimoreyang-ai/agenthint-core';
+import { DEFAULT_CONTROL_RETRIES, DEFAULT_CONTROL_TIMEOUT_MS } from '../vendor/agenthint-core/http/index.js';
+import type { ControlResult } from '../vendor/agenthint-core/index.js';
 import type { SessionControlVerb } from './types.ts';
 export { DEFAULT_CONTROL_RETRIES, DEFAULT_CONTROL_TIMEOUT_MS };
 export type { ControlResult };

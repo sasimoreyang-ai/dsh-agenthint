@@ -28,11 +28,20 @@ export interface HintInputs {
     firstOrdinarySent: boolean;
 }
 /**
+ * Assert that a value survives `JSON.stringify` without loss.
+ *
+ * Passing this check must mean the value encodes exactly as written: `NaN` and
+ * `Infinity` would become `null`, functions and `undefined` would disappear,
+ * `BigInt` would throw, and cycles would throw. Config that arrives from a user
+ * or a platform is dynamic input, so the TypeScript types are not enough.
+ */
+export declare function assertJsonValue(value: unknown, path?: string, seen?: Set<object>): void;
+/**
  * Reject a cache policy that cannot be serialised verbatim.
  *
  * The coordinator dispatches on `type`, so a policy without a string `type`
- * would silently do nothing. Failing here keeps that misconfiguration visible
- * at the caller instead of producing an inert hint.
+ * would silently do nothing, and any value that JSON would drop or reject would
+ * change the hint after it was validated.
  */
 export declare function assertValidCacheControl(value: unknown): asserts value is AgentHintCacheControl;
 /**

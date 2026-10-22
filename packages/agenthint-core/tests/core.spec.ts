@@ -377,3 +377,124 @@ describe('lease lifetime', () => {
     core.dispose()
   })
 })
+
+describe('review regressions: prepare transaction', () => {
+  it('rejects two concurrent first preparations without awaiting the first', async () => {
+    const core = new HintCoordinator({ transport: fakeTransport() })
+    core.registerSession({ sessionId: 'race', seeded: false })
+    // Create both promises before awaiting either: checking the reservation
+    // across an await would let both observe zero and both claim `start`.
+    const settled = await Promise.allSettled([
+      core.prepareRequest({ sessionId: 'race', requestClass: 'ordinary', model: 'm' }),
+      core.prepareRequest({ sessionId: 'race', requestClass: 'ordinary', model: 'm' }),
+    ])
+    const fulfilled = settled.filter(entry => entry.status === 'fulfilled')
+    expect(fulfilled).toHaveLength(1)
+    const rejected = settled.filter(entry => entry.status === 'rejected')
+    expect(rejected).toHaveLength(1)
+    expect(isAgentHintError((rejected[0] as PromiseRejectedResult).reason)).toBe(true)
+    for (const entry of fulfilled) (entry as PromiseFulfilledResult<{ finish(): void }>).value.finish()
+    core.dispose()
+  })
+
+  it('releases the session when hint construction throws', async () => {
+    const transport = fakeTransport()
+    const core = new HintCoordinator({ transport })
+    core.registerSession({ sessionId: 'leak', seeded: false })
+
+    await expect(core.prepareRequest({
+      sessionId: 'leak', requestClass: 'ordinary', model: 'm', cacheControl: { type: '' },
+    })).rejects.toSatisfy((error: unknown) => isAgentHintError(error) && error.code === 'INVALID_INPUT')
+
+    // The failure must not wedge the session: a legal request still prepares,
+    // and a control command can still run once it finishes.
+    const lease = await core.prepareRequest({ sessionId: 'leak', requestClass: 'ordinary', model: 'm' })
+    expect(lease.hint).toEqual({ session_id: 'leak', session_control: { type: 'start' } })
+    lease.accepted()
+    lease.finish()
+    void core.requestControl({ verb: 'stop', sessionId: 'leak', model: 'm' })
+    await settle()
+    expect(transport.calls.map(call => call.verb)).toEqual(['stop'])
+    transport.release()
+    await settle()
+    core.dispose()
+  })
+
+  it('does not commit an acceptance that arrives after finish', async () => {
+    const core = new HintCoordinator({ transport: fakeTransport() })
+    core.registerSession({ sessionId: 'late', seeded: false })
+    const lease = await core.prepareRequest({ sessionId: 'late', requestClass: 'ordinary', model: 'm' })
+    lease.finish()
+    lease.accepted()
+    // A cancelled request must not consume the session's single `start`.
+    expect(core.facts('late').firstOrdinarySent).toBe(false)
+    const next = await core.prepareRequest({ sessionId: 'late', requestClass: 'ordinary', model: 'm' })
+    expect(next.hint).toEqual({ session_id: 'late', session_control: { type: 'start' } })
+    next.finish()
+    core.dispose()
+  })
+})
+
+describe('review regressions: input validation', () => {
+  it('rejects an unrecognised request class instead of emitting a hint', async () => {
+    const core = new HintCoordinator({ transport: fakeTransport() })
+    core.registerSession({ sessionId: 'cls', seeded: false })
+    await expect(core.prepareRequest({
+      sessionId: 'cls', requestClass: 'not-recognized' as never, model: 'm',
+    })).rejects.toSatisfy((error: unknown) => isAgentHintError(error) && error.code === 'INVALID_INPUT')
+    // Rejection must not wedge the session.
+    const lease = await core.prepareRequest({ sessionId: 'cls', requestClass: 'ordinary', model: 'm' })
+    expect(lease.hint).toBeDefined()
+    lease.finish()
+    core.dispose()
+  })
+
+  it('rejects cache policy values that JSON would drop or reject', () => {
+    const cases: unknown[] = [
+      { type: 'kv', ttl: Number.NaN },
+      { type: 'kv', ttl: Number.POSITIVE_INFINITY },
+      { type: 'kv', fn: () => 1 },
+      { type: 'kv', n: 1n },
+      { type: 'kv', d: new Date() },
+      { type: 'kv', u: undefined },
+    ]
+    for (const cacheControl of cases) {
+      expect(() => buildAgentHint({
+        sessionId: 's1', requestClass: 'ordinary', seeded: false, firstOrdinarySent: false,
+        cacheControl: cacheControl as never,
+      })).toThrow(AgentHintError)
+    }
+  })
+
+  it('rejects a circular cache policy', () => {
+    const circular: Record<string, unknown> = { type: 'kv' }
+    circular['self'] = circular
+    expect(() => buildAgentHint({
+      sessionId: 's1', requestClass: 'ordinary', seeded: false, firstOrdinarySent: false,
+      cacheControl: circular as never,
+    })).toThrow(AgentHintError)
+  })
+
+  it('rejects a non-string session identity from a JavaScript caller', () => {
+    expect(() => buildAgentHint({
+      sessionId: 42 as never, requestClass: 'ordinary', seeded: false, firstOrdinarySent: false,
+    })).toThrow(AgentHintError)
+  })
+})
+
+describe('review regressions: transport outcome', () => {
+  it('reports an unknown outcome when a custom transport throws', async () => {
+    const core = new HintCoordinator({
+      transport: { send: async () => { throw new Error('boom') } },
+    })
+    core.registerSession({ sessionId: 'boom', seeded: false })
+    const lease = await core.prepareRequest({ sessionId: 'boom', requestClass: 'ordinary', model: 'm' })
+    lease.accepted()
+    lease.finish()
+    // A throw cannot prove the command was never dispatched, so it must not be
+    // reported as a definite failure a caller could safely retry.
+    await expect(core.requestControl({ verb: 'pause', sessionId: 'boom', model: 'm' }))
+      .resolves.toEqual({ status: 'unknown' })
+    core.dispose()
+  })
+})

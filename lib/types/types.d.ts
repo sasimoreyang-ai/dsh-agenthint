@@ -8,8 +8,8 @@
  *
  * @module dsh-llm-agent-hint/types
  */
-export type { AgentHintCacheControl, AgentHintWire, ControlVerb, SessionControlVerb, } from '@sasimoreyang-ai/agenthint-core';
-import type { AgentHintWire } from '@sasimoreyang-ai/agenthint-core';
+export type { AgentHintCacheControl, AgentHintWire, ControlVerb, SessionControlVerb, } from '../vendor/agenthint-core/index.js';
+import type { AgentHintWire } from '../vendor/agenthint-core/index.js';
 declare module '@deepseek-ai/dsh-deepseek-llm-api-extensions' {
     interface DeepSeekLlmApiExtensionMap {
         /** MindIE-Motor hint, contributed by the standalone route. */

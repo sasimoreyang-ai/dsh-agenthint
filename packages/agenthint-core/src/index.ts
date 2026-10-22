@@ -37,7 +37,7 @@ export {
 } from './errors.ts'
 export type { AgentHintErrorCode } from './errors.ts'
 
-export { assertValidCacheControl, buildAgentHint } from './hint.ts'
+export { assertJsonValue, assertValidCacheControl, buildAgentHint } from './hint.ts'
 export type { HintInputs } from './hint.ts'
 
 export type {
