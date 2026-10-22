@@ -126,6 +126,35 @@ describe('ChatCompletionsAdapter', () => {
     expect(received()['reasoning_effort']).toBe('none')
   })
 
+  it('always sends a content field, even for a tool-call-only assistant turn', async () => {
+    const { baseURL, received } = await serve([
+      { choices: [{ delta: { content: 'ok' } }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ])
+    await collect(adapterFor(baseURL), {
+      ...BASE_OPTIONS,
+      messages: [
+        { role: 'user', content: 'read it' },
+        {
+          role: 'assistant',
+          content: [{
+            type: 'tool-call',
+            id: 'call_1' as never,
+            name: 'read',
+            arguments: '{}',
+          }] as never,
+        },
+      ],
+    })
+    const messages = received()['messages'] as Record<string, unknown>[]
+    expect(messages).toHaveLength(2)
+    for (const message of messages) {
+      expect(message).toHaveProperty('role')
+      expect(message).toHaveProperty('content')
+    }
+    expect(messages[1]?.['tool_calls']).toBeDefined()
+  })
+
   it('fails with EMPTY_RESPONSE when the endpoint returns no content', async () => {
     const { baseURL } = await serve([{ choices: [{ delta: {}, finish_reason: 'stop' }] }])
     await expect(collect(adapterFor(baseURL), BASE_OPTIONS)).rejects.toMatchObject({ code: 'EMPTY_RESPONSE' })

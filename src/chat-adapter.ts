@@ -167,9 +167,11 @@ function toChatMessage(message: GenerateOptions['messages'][number]): ChatMessag
   const text = textOf(blocks)
   if (message.role === 'assistant') {
     const calls = toolCallsOf(blocks)
+    // `content` must always be present: the coordinator rejects a message that
+    // omits it, even when the turn is tool calls only.
     return {
       role: 'assistant',
-      ...text.length === 0 ? {} : { content: text },
+      content: text,
       ...calls.length === 0 ? {} : { tool_calls: calls },
     }
   }
