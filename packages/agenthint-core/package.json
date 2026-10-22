@@ -1,0 +1,38 @@
+{
+  "name": "@sasimoreyang-ai/agenthint-core",
+  "version": "0.6.0-rc.1",
+  "description": "Host-neutral AgentHint protocol core: wire types, hint construction, session coordinator, control transport contracts.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./http": {
+      "types": "./lib/http/index.d.ts",
+      "default": "./lib/http/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/**/*.js",
+    "lib/**/*.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --force",
+    "clean": "node -e \"require('fs').rmSync('lib',{recursive:true,force:true})\""
+  },
+  "dependencies": {},
+  "peerDependencies": {},
+  "devDependencies": {}
+}

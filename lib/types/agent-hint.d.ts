@@ -1,9 +1,10 @@
 /**
- * Pure construction of the `agent_hint` wire field. One function owns every
- * inclusion rule, so the extension seam stays transport-only and every rule
- * is unit-testable without a coordinator: background-purpose calls stay
- * unprefixed, a session without identity stays anonymous, and the `start`
- * verb rides only the first ordinary request of a fresh session.
+ * DSH mapping onto the host-neutral hint builder.
+ *
+ * The inclusion rules live in `@sasimoreyang-ai/agenthint-core`; this module
+ * contributes the one fact that is DSH-specific — that a defined `purpose`
+ * means a background call (compaction, session title). Other hosts classify
+ * their requests differently and call the core builder directly.
  *
  * @module dsh-llm-agent-hint/agent-hint
  */
@@ -13,7 +14,7 @@ import type { AgentHintCacheControl, AgentHintWire, SessionControlVerb } from '.
 export interface AgentHintInputs {
     /** Session identity of the request; `undefined` requests stay unprefixed. */
     sessionId: string | undefined;
-    /** Call purpose; every defined purpose skips injection. */
+    /** Call purpose; every defined purpose marks the call as background. */
     purpose: DeepSeekLlmApiExtensionRequest['purpose'];
     /** Identity of the compacted-away parent session, when one is known. */
     parentSessionId?: string | undefined;
@@ -27,17 +28,11 @@ export interface AgentHintInputs {
     firstOrdinarySent: boolean;
 }
 /**
- * Build the `agent_hint` field for one request, or `undefined` when the
- * request must stay unprefixed. Rules, in order:
+ * Map a DSH request onto the core builder.
  *
- * 1. Defined purposes (compaction, session-title) are background calls
- *    that must not perturb the live session's KV-cache identity.
- * 2. A request without a session identity cannot prefix anything.
- * 3. An explicit piggyback verb wins over the `start` rule.
- * 4. Otherwise the first ordinary request of a fresh session declares
- *    `start`; a seeded session never re-declares it.
- * 5. `parent_session_id` and `cache_control` attach whenever their inputs
- *    are present, including on verb-carrying requests.
+ * A defined `purpose` is DSH's spelling of "this call must not perturb the live
+ * session's KV-cache identity", which the core expresses as the `background`
+ * request class.
  *
  * @param inputs - the per-request facts collected by the extension.
  * @returns the wire object, or `undefined` to omit the field entirely.

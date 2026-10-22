@@ -1,15 +1,9 @@
 {
   "name": "@sasimoreyang-ai/dsh-llm-agent-hint",
-  "description": "DSH provider with inherited DeepSeek settings, agent_hint and bounded session lifecycle control over Chat or Messages",
   "version": "0.6.0-rc.1",
-  "publishConfig": {
-    "access": "public"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/sasimoreyang-ai/dsh-agenthint.git"
-  },
+  "description": "DSH provider with inherited DeepSeek settings, agent_hint and bounded session lifecycle control over Chat or Messages",
   "type": "module",
+  "license": "MIT",
   "main": "lib/types/index.js",
   "types": "lib/types/index.d.ts",
   "exports": {
@@ -39,7 +33,12 @@
     "core-patch/CORE-PATCH.md",
     "STANDARDIZATION.md"
   ],
-  "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24"
+  },
   "scripts": {
     "build": "tsc -b && node scripts/build-client.mjs",
     "typecheck": "tsc -b --force",
@@ -47,6 +46,10 @@
     "test": "vitest run",
     "check": "npm run typecheck && npm test && node scripts/check-package.mjs",
     "pretest": "npm run build"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "~3.18.4",
+    "@sasimoreyang-ai/agenthint-core": "0.6.0-rc.1"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
@@ -70,35 +73,6 @@
     "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.1",
     "@deepseek-ai/dsh-workspace": "0.2.0-rc.1",
     "react": "^18.2.0"
-  },
-  "peerDependenciesMeta": {
-    "@deepseek-ai/cordis-plugin-loader": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-api-gateway": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-client-connection": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-client-ui-conversation": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-client-ui-slots": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-client-ui-renderer": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-client-ui-session": {
-      "optional": true
-    },
-    "react": {
-      "optional": true
-    }
-  },
-  "dependencies": {
-    "@deepseek-ai/schemastery": "~3.18.4"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
@@ -139,12 +113,42 @@
     "typescript": "^6.0.3",
     "vitest": "4.1.11"
   },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sasimoreyang-ai/dsh-agenthint.git"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis-plugin-loader": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-api-gateway": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-connection": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-conversation": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-slots": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-renderer": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-session": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
   "homepage": "https://github.com/sasimoreyang-ai/dsh-agenthint#readme",
   "bugs": {
     "url": "https://github.com/sasimoreyang-ai/dsh-agenthint/issues"
-  },
-  "engines": {
-    "node": "^22.19.0 || >=24"
   },
   "dsh": {
     "client": {
