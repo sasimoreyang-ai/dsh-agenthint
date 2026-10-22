@@ -30,7 +30,8 @@ function freshState() {
         archived: false, seeded: false, resumeSent: false, resumeAttempt: {}, nextResumeAt: 0,
         idle: true, pausePending: false, pauseSent: false, firstOrdinarySent: false,
         parentSessionId: undefined, lastModel: undefined, pendingOp: undefined, mutations: 0,
-        unsafe: false, generation: 0, incarnation: {}, active: 0, dataIdle: undefined, releaseData: undefined,
+        unsafe: false, generation: 0, incarnation: {}, active: 0, preparing: 0,
+        dataIdle: undefined, releaseData: undefined,
     };
 }
 /**
@@ -238,21 +239,46 @@ export class HintCoordinator {
      * {@link beginOrdinary} and {@link buildHint} themselves.
      */
     async prepareRequest(facts) {
-        const release = facts.requestClass === 'ordinary'
-            ? await this.beginOrdinary(facts.sessionId, facts.model, facts.signal)
+        const sessionId = facts.sessionId;
+        const ordinary = facts.requestClass === 'ordinary';
+        const state = sessionId === undefined ? undefined : this.state(sessionId);
+        // Single-writer contract: two overlapping preparations on a session that has
+        // not yet declared `start` would both claim the verb. Reject the second one
+        // rather than let the backend see two competing first requests. Stream
+        // leases stay concurrent; only the hint declaration is single-writer.
+        if (ordinary && state !== undefined && !state.firstOrdinarySent && state.preparing > 0) {
+            throw new AgentHintError('AgentHint: another ordinary request is already preparing this session; '
+                + 'a session admits one unaccepted first request at a time.', 'INVALID_INPUT');
+        }
+        const release = ordinary
+            ? await this.beginOrdinary(sessionId, facts.model, facts.signal)
             : () => { };
+        if (ordinary && state !== undefined)
+            state.preparing++;
         const hint = this.buildHint(facts);
         let accepted = false;
+        let settled = false;
+        const settlePreparation = () => {
+            if (settled)
+                return;
+            settled = true;
+            if (ordinary && state !== undefined && state.preparing > 0)
+                state.preparing--;
+        };
         return {
             hint,
             accepted: () => {
                 if (accepted)
                     return;
                 accepted = true;
-                if (facts.requestClass === 'ordinary')
-                    this.noteOrdinaryRequest(facts.sessionId, facts.model);
+                if (ordinary)
+                    this.noteOrdinaryRequest(sessionId, facts.model);
+                settlePreparation();
             },
-            finish: release,
+            finish: () => {
+                release();
+                settlePreparation();
+            },
         };
     }
     /** Build the wire field for one request from current session facts. */

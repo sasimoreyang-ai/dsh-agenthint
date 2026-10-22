@@ -270,4 +270,110 @@ describe('resume advisory retry', () => {
     expect(transport.calls[0]?.verb).toBe('resume')
     core.dispose()
   })
+
+  it('never retries a mutating verb that answered 503', async () => {
+    const transport = fakeTransport([{ status: 'unknown' }])
+    const core = new HintCoordinator({ transport })
+    core.registerSession({ sessionId: 's1', seeded: false })
+    const lease = await core.prepareRequest({ sessionId: 's1', requestClass: 'ordinary', model: 'm' })
+    lease.accepted()
+    lease.finish()
+
+    await core.requestControl({ verb: 'pause', sessionId: 's1', model: 'm' })
+    await settle()
+    // Exactly one attempt: resending could duplicate an action that may have run.
+    expect(transport.calls.filter(call => call.verb === 'pause')).toHaveLength(1)
+    core.dispose()
+  })
+
+  it('re-arms the resume guard after a failed prefetch', async () => {
+    const transport = fakeTransport([{ status: 'failed', retryable: false }])
+    let now = 0
+    const core = new HintCoordinator({ transport, now: () => now, resumeCooldownMs: 1_000 })
+    core.registerSession({ sessionId: 's1', seeded: true })
+    core.ensureResume('s1', 'm')
+    await settle()
+
+    // Inside the cool-down the guard stays armed.
+    core.ensureResume('s1', 'm')
+    await settle()
+    expect(transport.calls).toHaveLength(1)
+
+    // Past the cool-down a new attempt is allowed.
+    now = 2_000
+    core.ensureResume('s1', 'm')
+    await settle()
+    expect(transport.calls).toHaveLength(2)
+    core.dispose()
+  })
+})
+
+describe('single-writer session contract', () => {
+  it('rejects a second overlapping preparation before start is declared', async () => {
+    const core = new HintCoordinator({ transport: fakeTransport() })
+    core.registerSession({ sessionId: 's1', seeded: false })
+
+    const first = await core.prepareRequest({ sessionId: 's1', requestClass: 'ordinary', model: 'm' })
+    await expect(
+      core.prepareRequest({ sessionId: 's1', requestClass: 'ordinary', model: 'm' }),
+    ).rejects.toSatisfy((error: unknown) => isAgentHintError(error) && error.code === 'INVALID_INPUT')
+
+    // Once the first is accepted the session is no longer "first", so a second
+    // preparation is allowed again.
+    first.accepted()
+    first.finish()
+    const next = await core.prepareRequest({ sessionId: 's1', requestClass: 'ordinary', model: 'm' })
+    expect(next.hint).toEqual({ session_id: 's1' })
+    next.finish()
+    core.dispose()
+  })
+
+  it('does not block background calls behind an unaccepted first request', async () => {
+    const core = new HintCoordinator({ transport: fakeTransport() })
+    core.registerSession({ sessionId: 's1', seeded: false })
+    const first = await core.prepareRequest({ sessionId: 's1', requestClass: 'ordinary', model: 'm' })
+    const background = await core.prepareRequest({ sessionId: 's1', requestClass: 'background', model: 'm' })
+    expect(background.hint).toBeUndefined()
+    background.finish()
+    first.accepted()
+    first.finish()
+    core.dispose()
+  })
+})
+
+describe('lease lifetime', () => {
+  it('releases the stream slot when a prepared request never starts', async () => {
+    const transport = fakeTransport()
+    const core = new HintCoordinator({ transport })
+    core.registerSession({ sessionId: 's1', seeded: false })
+
+    const lease = await core.prepareRequest({ sessionId: 's1', requestClass: 'ordinary', model: 'm' })
+    // The caller abandons the request: finish() must still free the session so
+    // a queued mutation can run.
+    lease.finish()
+
+    void core.requestControl({ verb: 'stop', sessionId: 's1', model: 'm' })
+    await settle()
+    expect(transport.calls.map(call => call.verb)).toEqual(['stop'])
+    transport.release()
+    await settle()
+    core.dispose()
+  })
+
+  it('makes finish idempotent so a double release cannot corrupt the queue', async () => {
+    const transport = fakeTransport()
+    const core = new HintCoordinator({ transport })
+    core.registerSession({ sessionId: 's1', seeded: false })
+    const lease = await core.prepareRequest({ sessionId: 's1', requestClass: 'ordinary', model: 'm' })
+    lease.accepted()
+    lease.finish()
+    lease.finish()
+
+    void core.requestControl({ verb: 'compact', sessionId: 's1', model: 'm' })
+    await settle()
+    expect(transport.calls.map(call => call.verb)).toEqual(['compact'])
+    transport.release()
+    await settle()
+    core.dispose()
+  })
 })
