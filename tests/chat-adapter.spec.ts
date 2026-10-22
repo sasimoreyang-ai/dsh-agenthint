@@ -69,6 +69,17 @@ describe('ChatCompletionsAdapter', () => {
     expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
   })
 
+  it('accepts the bare reasoning field name some coordinators emit', async () => {
+    const { baseURL } = await serve([
+      { choices: [{ delta: { reasoning: 'think' } }] },
+      { choices: [{ delta: { content: 'ok' } }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ])
+    const chunks = await collect(adapterFor(baseURL), BASE_OPTIONS)
+    expect(chunks).toContainEqual({ type: 'reasoning-delta', index: 0, text: 'think' })
+    expect(chunks).toContainEqual({ type: 'text-delta', index: 1, text: 'ok' })
+  })
+
   it('maps length to max-tokens and tool_calls to tool-calls', async () => {
     const { baseURL } = await serve([
       { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'read', arguments: '{"p":1}' } }] } }] },

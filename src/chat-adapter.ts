@@ -186,6 +186,7 @@ interface ChatStreamEvent {
     delta?: {
       content?: unknown
       reasoning_content?: unknown
+      reasoning?: unknown
       tool_calls?: unknown
     }
     finish_reason?: unknown
@@ -281,12 +282,17 @@ async function* translate(events: AsyncIterable<ChatStreamEvent>): AsyncGenerato
     for (const choice of event.choices ?? []) {
       const delta = choice.delta
       if (delta !== undefined) {
-        if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
+        // Coordinators differ: some emit reasoning_content (OpenAI-compatible
+        // convention), others reasoning. Accept either.
+        const reasoning = typeof delta.reasoning_content === 'string'
+          ? delta.reasoning_content
+          : typeof delta.reasoning === 'string' ? delta.reasoning : ''
+        if (reasoning.length > 0) {
           if (reasoningIndex === undefined) {
             reasoningIndex = nextIndex++
             yield { type: 'block-start', index: reasoningIndex, blockType: 'reasoning' }
           }
-          yield { type: 'reasoning-delta', index: reasoningIndex, text: delta.reasoning_content }
+          yield { type: 'reasoning-delta', index: reasoningIndex, text: reasoning }
         }
         if (typeof delta.content === 'string' && delta.content.length > 0) {
           if (textIndex === undefined) {
