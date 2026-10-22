@@ -114,6 +114,18 @@ describe('ChatCompletionsAdapter', () => {
     expect((body['tools'] as { function: { name: string } }[])[0]?.function.name).toBe('read')
   })
 
+  it('declares reasoning efforts and maps the selected one onto the wire', async () => {
+    const { baseURL, received } = await serve([
+      { choices: [{ delta: { content: 'ok' } }] },
+      { choices: [{ delta: {}, finish_reason: 'stop' }] },
+    ])
+    const adapter = adapterFor(baseURL)
+    const resolved = await adapter.resolveModel('deepseek-agent-hint', 'fixture')
+    expect(resolved.reasoning?.efforts.map(e => String(e.id))).toEqual(['off', 'low', 'high', 'max'])
+    await collect(adapter, { ...BASE_OPTIONS, reasoningEffort: 'off' as never })
+    expect(received()['reasoning_effort']).toBe('none')
+  })
+
   it('fails with EMPTY_RESPONSE when the endpoint returns no content', async () => {
     const { baseURL } = await serve([{ choices: [{ delta: {}, finish_reason: 'stop' }] }])
     await expect(collect(adapterFor(baseURL), BASE_OPTIONS)).rejects.toMatchObject({ code: 'EMPTY_RESPONSE' })

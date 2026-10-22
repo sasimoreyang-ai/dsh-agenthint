@@ -10,12 +10,13 @@
  * @module dsh-llm-agent-hint/chat-adapter
  */
 
-import { attributionHeaders, LlmAdapter, LlmError, ToolCallId } from '@deepseek-ai/dsh-llm'
+import { attributionHeaders, LlmAdapter, LlmError, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type {
   ContentBlock,
   FinishReason,
   GenerateOptions,
   LlmModelInfo,
+  LlmModelReasoningInfo,
   LlmResolvedModelInfo,
   PreparedAdapterCall,
   StreamChunk,
@@ -45,6 +46,31 @@ interface ChatTool {
   function: { name: string; description: string; parameters: Record<string, unknown> }
 }
 
+/** Reasoning efforts this route offers, mirroring the coordinator's vocabulary. */
+const EFFORT_OFF = ReasoningEffortId('off')
+const EFFORT_LOW = ReasoningEffortId('low')
+const EFFORT_HIGH = ReasoningEffortId('high')
+const EFFORT_MAX = ReasoningEffortId('max')
+
+/** Wire value for each effort; the coordinator spells "off" as "none". */
+const EFFORT_WIRE: ReadonlyMap<string, string> = new Map([
+  [String(EFFORT_OFF), 'none'],
+  [String(EFFORT_LOW), 'low'],
+  [String(EFFORT_HIGH), 'high'],
+  [String(EFFORT_MAX), 'max'],
+])
+
+/** Selectable efforts advertised to the model picker. */
+const REASONING: LlmModelReasoningInfo = {
+  efforts: [
+    { id: EFFORT_OFF, name: 'Off', description: 'Skip reasoning for simple tasks.' },
+    { id: EFFORT_LOW, name: 'Low', description: 'Short reasoning for routine edits.' },
+    { id: EFFORT_HIGH, name: 'High', description: 'Deeper reasoning for hard problems.' },
+    { id: EFFORT_MAX, name: 'Max', description: 'DeepSeek V4 series maximum effort.' },
+  ],
+  defaultEffort: EFFORT_HIGH,
+}
+
 /** Body sent to the coordinator's chat/completions entrypoint. */
 interface ChatRequestBody {
   model: string
@@ -55,6 +81,7 @@ interface ChatRequestBody {
   temperature?: number
   stop?: string[]
   tools?: ChatTool[]
+  reasoning_effort?: string
   agent_hint?: AgentHintWire
 }
 
@@ -175,6 +202,10 @@ function buildBody(
       type: 'function',
       function: { name: tool.name, description: tool.description, parameters: tool.parameters },
     }))
+  }
+  if (options.reasoningEffort !== undefined) {
+    const wire = EFFORT_WIRE.get(String(options.reasoningEffort))
+    if (wire !== undefined) body.reasoning_effort = wire
   }
   if (hint !== undefined) body.agent_hint = hint
   return body
@@ -374,7 +405,7 @@ export class ChatCompletionsAdapter extends LlmAdapter {
       id: model,
       ...connection.maxTokens === undefined ? {} : { maxTokens: connection.maxTokens },
     }
-    return catalogModelInfo(provider, catalog)
+    return { ...catalogModelInfo(provider, catalog), reasoning: REASONING }
   }
 
   async *#generate(
