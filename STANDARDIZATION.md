@@ -1,5 +1,98 @@
 # 实现与验证记录
 
+## v0.5.x：新增 chat/completions 传输，原厂引擎可用（2026-10-22）
+
+### 为什么
+
+外部 KV 缓存按会话工作，引擎必须收到 `agent_hint`。原厂镜像的两个入口支持不同：
+
+```
+anthropic/protocol.py                agent_hint 出现 0 次   ← 字段被静默丢弃
+openai/chat_completion/protocol.py   agent_hint 出现 9 次   ← 字段保留
+```
+
+DSH 自带的 DeepSeek 适配器走 Messages，因此在原厂引擎上：
+
+- 请求成功（HTTP 200）
+- 但 `register context management … session id None`
+- `pause`/`resume` 报 `has 0 hash/block in SAM`，全部 no-op
+
+此前唯一出路是改引擎补两行，但那不可交付（容器重建即失效）。
+
+### 改了什么
+
+新增 `ChatCompletionsAdapter`（`src/chat-adapter.ts`），数据面改走 `/v1/chat/completions`。新增 `transport` 配置，默认 `chat`。
+
+| 版本 | 修复 |
+| --- | --- |
+| v0.5.0 | 适配器本体、`transport` 配置项 |
+| v0.5.1 | chat 端点 URL 少 `/v1` 前缀 |
+| v0.5.2 | 协调器用 `delta.reasoning` 而非 `delta.reasoning_content`，只认后者会丢失全部思维链 |
+
+两种传输共用 `buildAgentHint`、`LifecycleBridge` 屏障与 `accept` 记账；控制面本就走 chat/completions，不受影响。
+
+### 本地验证
+
+- `npx tsc -b --force` 退出码 0
+- `npx vitest run`：**12 个测试文件、90 项测试通过**
+- 新增 `tests/chat-adapter.spec.ts`：分块翻译、`reasoning` 字段名、工具调用、请求体映射、空响应守卫
+
+### 真机验证（node_153，原厂镜像，零补丁）
+
+环境：`messages` 端点补丁 0 处、Motor 近两天 0 个文件被改、后端 memcache、配置哈希 `e79ea964…` 与原始一致。
+
+**抓包证据**（本地日志代理截获插件真实请求体）：
+
+```
+路径: /v1/chat/completions
+✅ agent_hint: {"session_id": "session-a5928c27-…", "session_control": {"type": "start"}}
+工具数: 24   消息数: 3
+
+后台请求（标题生成）:
+✅ agent_hint: False      ← 正确排除
+```
+
+**引擎侧**：
+
+```
+register context management … session id session-a5928c27-…
+on_blocks_allocated_for_request, session_id = session-a5928c27-…
+```
+
+**四动作**：
+
+| 会话 | 动作 | 结果 |
+| --- | --- | --- |
+| `a5928c27` | pause → offload | `status=True`，676 块 |
+| `a5928c27` | stop → evict | `status=True`，676 块 |
+| `c8318872` | pause → offload | `status=True`，678 块 |
+| `c8318872` | resume → prefetch | `status=True`，678 块 |
+| `c8318872` | stop → evict | `status=True`，678 块 |
+
+零失败、零 no-op。
+
+**收益**（100K 长前缀 + 6 会话 600K 工作集 > HBM 470K）：
+
+| 场景 | TTFT |
+| --- | --- |
+| 冷态 | 25.74 s |
+| 连接器被动载入 | 2.35 s |
+| Hint 主动预取 | 2.10 s |
+
+Hint 增量 **10.7%**，端到端 **91.9%**。预取耗时 1.03 s。
+
+### 边界
+
+- 收益需要长前缀与 HBM 压力；26K 短会话下增量接近 0
+- 收益需要提前量；预取约 1.03 s
+- 图片/文件/工具声明类内容块在 chat 传输下被丢弃，不报错
+- 每场景 n=4，方向一致但不足以给严格置信区间
+- 未测并发争抢、真实 DSH 工具任务、界面内计时
+
+设计说明见 [docs/transport.md](docs/transport.md)。
+
+---
+
 ## v0.4.0：移除 inherit 模式，端点改为继承（2026-10-21）
 
 **移除 `mode: inherit`。** 该模式不发送独立控制请求，因而无法触发卸载与预取；而 v0.3.0 的端点继承已经让 standalone 模式同样不需要手写地址与模型，inherit 的主要理由消失。保留它会让用户以为「装了就有加速」。
