@@ -55,7 +55,7 @@ function makeBridge(): { bridge: LifecycleBridge; calls: RecordedCall[] } {
   const client = {
     send: (verb: SessionControlVerb, sessionId: string, model?: string) => {
       calls.push({ verb, sessionId, model })
-      return Promise.resolve()
+      return Promise.resolve({ status: 'accepted', httpStatus: 200 })
     },
   } as SessionControlClient
   return { bridge: new LifecycleBridge({ client, pendingOpAwaitMs: 50 }), calls }
@@ -71,6 +71,7 @@ describe('LifecycleBridge', () => {
         calls.push(`begin:${verb}`)
         if (verb === 'pause') await gate
         calls.push(`end:${verb}`)
+        return { status: 'accepted', httpStatus: 200 }
       },
     } as SessionControlClient })
     bridge.noteOrdinaryRequest(SID, 'model-a')
@@ -91,7 +92,7 @@ describe('LifecycleBridge', () => {
     const gate = new Promise<void>(resolve => { release = resolve })
     const calls: string[] = []
     const bridge = new LifecycleBridge({ pendingOpAwaitMs: 1000, client: {
-      send: async (verb: string) => { calls.push(verb); if (verb === 'stop') await gate },
+      send: async (verb: string) => { calls.push(verb); if (verb === 'stop') await gate; return { status: 'accepted', httpStatus: 200 } },
     } as SessionControlClient })
     bridge.onSessionCreated(sessionOf())
     bridge.noteOrdinaryRequest(SID, 'model-a')

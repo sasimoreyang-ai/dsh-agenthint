@@ -1,110 +1,27 @@
-# 端点继承：让 standalone 模式不再需要手填地址
+# 有效配置继承
 
-日期：2026-10-21；宿主基线：npm DSH 0.2.0-rc.1。
+适用：0.6.0-rc.1 / DSH 0.2.0-rc.1。实现：`src/config.ts`、`src/inherited-connection.ts`、`src/index.ts`。
 
-## 问题
+## 实际来源
 
-插件提供完整控制面（`start`/`pause`/`resume`/`stop`），历史上需要三项配置：
+每次解析读取公开Loader条目，要求来源id为`llm-deepseek`、唯一、未禁用、已激活。从其有效fiber配置读取volatile引用并经官方协议resolver处理，包含schema默认目录与生成设置。没有Loader时才兼容ConfigEditor原始层，并经官方schema校验。非法源配置显式报错；缺失/未激活/重复来源不贡献配置。
 
-```yaml
-- id: llm-agent-hint
-  config:
-    provider: deepseek-agent-hint
-    baseURL: http://192.168.41.153:1025   # 协调器地址
-    models:                                # 模型列表
-      - id: DeepSeek-V4-Flash
-```
+不缓存继承结果；全局volatile更新与源生命周期变化刷新目录注册。每个prepared请求固定自己的设置，不因热更新混用另一代端点和鉴权引用。源端点更换不迁移已有KV会话，管理员应排空请求后新建会话。
 
-其中 `baseURL` 对普通用户不可行：
+## 优先级
 
-1. **DSH 的设置页不提供第三方插件的配置表单。** `dsh-client-ui-settings-models` 的 `layoutOf` 只识别 `llm-deepseek` 与 `llm-pi-ai` 两个 namespace，其余一律 `unknown`，渲染出的是一句提示：`其余字段在 cordis.patch.yml 中，请直接编辑对应段。`
-2. **手写 YAML 对非开发者门槛过高。** 缩进错误会导致 profile 无法加载，而报错信息面向开发者。
-3. **地址本身无法被插件猜出。** 插件运行在用户机器，协调器运行在服务器，两者之间没有任何自动发现通道。
+显式插件参数优先，省略时继承源实际值，再使用协议默认值。显式localhost和空模型目录都受尊重。地址没有来源时再读`DSH_AGENT_HINT_BASE_URL`，最后localhost:1025。无来源和显式模型则目录为空。
 
-## 观察
+`transport`、provider和AgentHint策略属于本插件，不由源路由决定。Chat最终模型信息提供真实上下文容量、输出上限、thinking/effort默认值和重试策略，同时声明文本输入能力。
 
-**能用一个模型的人，必然已经配好了端点。**
+## 凭据
 
-DSH 要能用，用户必然已经配置了某个 DeepSeek 兼容路由（`llm-deepseek`），其中有 `baseURL` 和 `models`。这两项恰好就是本插件需要的。
+只继承引用，不把密钥写回配置。最终模型端点与源完整URL相同（忽略末尾斜线）、没有显式引用且未禁用inheritCredentials时才继承。继承引用使用`x-api-key`匹配官方API-key路由；显式插件引用保留Bearer。
 
-所以不需要问用户，**去读已有路由的配置即可**。
+请求时从credentials服务解析引用；该服务不存在时读取启动环境。显式引用缺失报MISSING_CREDENTIAL。源默认DEEPSEEK_API_KEY可能在无鉴权本地协调器上不存在，所以继承引用缺失时不发送凭据；受保护后端仍可以返回AUTH错误。
 
-## 实现
-
-### 读取来源
-
-`ConfigEditor.configuration()` 返回每个 Loader 条目的 `inherited` 与 `override` 两层配置：
-
-```ts
-interface ConfigurationRow {
-  entry: { options?: { id?: string } }
-  inherited: Record<string, unknown>
-  override: Record<string, unknown>
-}
-```
-
-合并两层后读取 `baseURL` 与 `models`，来源条目 id 为 `llm-deepseek`（`INHERIT_SOURCE_ID`）。
-
-见 `src/inherited-connection.ts`。
-
-### 优先级链
-
-`resolveBaseURL` 按固定顺序取值：
-
-| 顺序 | 来源 | 说明 |
-|---|---|---|
-| 1 | 显式配置 | 值不等于内置默认值即视为操作者选择，永远优先 |
-| 2 | 继承路由 | 从 `llm-deepseek` 读到的端点 |
-| 3 | 环境变量 | `DSH_AGENT_HINT_BASE_URL` |
-| 4 | 内置默认 | `http://127.0.0.1:1025` |
-
-模型目录同理：显式配置 > 继承路由 > 空。
-
-### 缓存与失效
-
-`options()` 每个请求调用一次，因此继承结果在首次读到后缓存。两处细节：
-
-- **只在编辑器服务挂载后才固定缓存。** 插件激活时 `configEditor` 可能尚未就绪，过早缓存会冻结一个空结果。
-- **`loader/volatile-update` 时清空缓存。** 用户改了 `llm-deepseek` 的地址后，本插件下一次请求即读到新值，无需重启。
-
-## 覆盖范围
-
-| 场景 | 是否需要手配 | 走哪条 |
-|---|---|---|
-| 用户已有可用 DeepSeek 路由 | **不需要** | 继承 |
-| 部署脚本设了环境变量 | 不需要 | 环境变量 |
-| 协调器与 DSH 同机、默认端口 | 不需要 | 内置默认 |
-| 以上都不满足 | 需要 | 显式配置 |
-
-前三种合起来覆盖了「已经能用 DSH」的绝大多数部署。
-
-## 边界
-
-- **继承的是端点与模型目录，不继承凭据。** 本插件默认不发送 `authorization`；协调器若需要鉴权，仍须配置 `apiKeyEnv`。
-- **继承不改变路由归属。** 本插件仍注册自己的 provider `deepseek-agent-hint`，与源路由并存，互不影响。
-- **源路由不存在时静默回退。** 没有 `llm-deepseek` 条目、编辑器抛错、字段类型不符，全部返回空结果，不报错。
+有凭据引用且控制origin不同于模型origin时拒绝控制，不转发密钥。独立控制凭据不在当前配置范围内。数据与控制请求均拒绝重定向；管理员须配置最终可信地址。共享密钥引用的轮换仍由credentials服务管理，跨端点迁移应使用各自的引用并协调在途请求。
 
 ## 验证
 
-`tests/inherited-connection.spec.ts` 覆盖：
-
-| 用例 | 断言 |
-|---|---|
-| 显式配置优先 | 与继承值不同时取显式值 |
-| 继承生效 | 配置为默认值时取继承值 |
-| 环境变量兜底 | 无继承时取环境变量 |
-| 继承优先于环境变量 | 两者都在时取继承值 |
-| 空值忽略 | 空字符串不覆盖默认值 |
-| 模型目录继承 | 空配置时取继承目录 |
-| 继承目录被复制 | 调用方修改不影响源对象 |
-| 服务缺失 | 返回空，不抛错 |
-| 条目缺失 | 返回空 |
-| 编辑器抛错 | 返回空，不抛错 |
-| 字段类型错误 | 丢弃非法值 |
-
-全部 87 项测试通过（12 个测试文件）。
-
-## 未覆盖
-
-- 真机上「用户从未配置过任何模型」的场景：此时继承无源可读，仍需显式配置或环境变量。这属于部署前提，不是插件可以消除的。
-- 经 DSH 的 Messages 协议发出的请求，在测试的协调器上拿不到可卸载的块；该现象属引擎侧，与本改动无关，另行跟踪。
+真实Loader测试覆盖：源A→B、默认目录、删除/重加/禁用/恢复、显式覆盖与凭据退出继承。Chat prepared-call回归覆盖端点/引用同一代快照，stock AgentLoop集成覆盖继承后的实际HTTP字段。

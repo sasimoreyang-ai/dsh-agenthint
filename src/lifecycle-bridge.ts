@@ -1,53 +1,32 @@
-/**
- * `LifecycleBridge`: the seam between harness session lifecycle events and
- * coordinator session-control verbs. `session/created` only records a seeded
- * session; the first ordinary request then requests the `resume` prefetch
- * through {@link ensureResume}. A change in the foreground session requests
- * a `pause` once the previous session reaches idle; a successful
- * `compaction/end` requests a `compact` (evict-and-rebuild),
- * `session/disposed` requests a terminal `stop` (evict), and
- * `workspace/session-archived` requests an advisory `stop`.
- * The bridge also tracks, per session, whether the first ordinary request
- * already carried the `start` declaration, and exposes a bounded fail-open
- * barrier (`awaitPendingOp`) so a request that races an in-flight manage
- * verb waits for it — up to a configured cap — before serialization.
- *
- * @module dsh-llm-agent-hint/lifecycle-bridge
- */
-
+/** Session control queue, bounded barriers and ordinary-request leases. */
 import type { Context } from '@deepseek-ai/cordis'
 import type { AgentStatus } from '@deepseek-ai/dsh-agent'
 import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
-// Type-only: merges 'compaction/start'/'compaction/end' into SessionEventMap.
 import type {} from '@deepseek-ai/dsh-compaction/types'
-// Type-only: merges 'session/composing' and 'workspace/session-archived' into
-// the cordis Events map, so this package builds against a stock host.
 import type {} from './host-events.ts'
-import type { SessionControlClient } from './control-client.ts'
+import type { ControlResult, SessionControlClient } from './control-client.ts'
+import type { SessionControlVerb } from './types.ts'
+import { LlmError } from '@deepseek-ai/dsh-llm'
 
-/** Warning sink shared with the control client. */
-export interface BridgeWarnSink {
-  /** Report one degraded bridge behavior (barrier timeout, send failure). */
-  (message: string, error?: unknown): void
-}
-
-/** Validated facts for the bridge; resolved once per plugin load. */
+export interface BridgeWarnSink { (message: string, error?: unknown): void }
 export interface LifecycleBridgeOptions {
-  /** Best-effort manage-request transport. */
   client: SessionControlClient
-  /** Cap on how long a data-plane request waits for an in-flight verb. */
   pendingOpAwaitMs: number
-  /** Warning sink; defaults to silent. */
   warn?: BridgeWarnSink
 }
-
-/** Default cap for the pre-serialization manage-verb barrier. */
 export const DEFAULT_PENDING_OP_AWAIT_MS = 2_000
-
+export class ControlBarrierError extends LlmError {
+  constructor() {
+    super('AgentHint: a cache-changing control is pending or has an unknown outcome; this session cannot safely start another request. Check the coordinator before continuing.', 'CONTROL_BARRIER')
+    this.name = 'ControlBarrierError'
+  }
+}
 interface SessionState {
   archived: boolean
   seeded: boolean
   resumeSent: boolean
+  resumeAttempt: object
+  nextResumeAt: number
   agentStatus: AgentStatus
   pausePending: boolean
   pauseSent: boolean
@@ -55,98 +34,103 @@ interface SessionState {
   parentSessionId: SessionId | undefined
   lastModel: string | undefined
   pendingOp: Promise<void> | undefined
+  mutations: number
+  unsafe: boolean
+  generation: number
+  incarnation: object
+  active: number
+  dataIdle: Promise<void> | undefined
+  releaseData: (() => void) | undefined
 }
-
-/**
- * Event-to-verb routing with per-session bookkeeping. One instance serves
- * the whole plugin lifetime; all Cordis listeners are registered through
- * {@link subscribe} so their disposers follow the plugin's own scope.
- */
 export class LifecycleBridge {
   private readonly states = new Map<string, SessionState>()
   private lastOrdinarySessionId: string | undefined
   private disposed = false
-
+  private readonly lifetime = new AbortController()
+  get signal(): AbortSignal { return this.lifetime.signal }
   constructor(private readonly options: LifecycleBridgeOptions) {}
 
-  /**
-   * Register the six lifecycle listeners on one context.
-   * @param ctx - context whose scope owns the listener disposers.
-   */
   subscribe(ctx: Context): void {
     ctx.effect(() => () => this.dispose(), 'agent-hint: bridge state')
-    ctx.on('session/created', (session) => { this.onSessionCreated(session) }, { global: true })
-    ctx.on('session/event', (session, event) => { this.onSessionEvent(session, event) }, { global: true })
-    ctx.on('session/disposed', (session) => { this.onSessionDisposed(session) }, { global: true })
-    ctx.on('workspace/session-archived', (sessionId) => { this.onSessionArchived(sessionId) }, { global: true })
-    ctx.on('agent/status', ({ agent, status }) => { this.onAgentStatus(agent.id, status) }, { global: true })
-    ctx.on('session/composing', (sessionId) => { this.onSessionComposing(sessionId) }, { global: true })
+    ctx.on('session/created', session => this.onSessionCreated(session), { global: true })
+    ctx.on('session/event', (session, event) => this.onSessionEvent(session, event), { global: true })
+    ctx.on('session/disposed', session => this.onSessionDisposed(session), { global: true })
+    ctx.on('workspace/session-archived', id => this.onSessionArchived(id), { global: true })
+    ctx.on('agent/status', ({ agent, status }) => this.onAgentStatus(agent.id, status), { global: true })
+    ctx.on('session/composing', id => this.onSessionComposing(id), { global: true })
   }
-
-  /** Drop all tracked state (plugin teardown). */
   dispose(): void {
     this.disposed = true
+    this.lifetime.abort()
+    for (const state of this.states.values()) state.releaseData?.()
     this.states.clear()
     this.lastOrdinarySessionId = undefined
   }
-
-  /**
-   * The `agent_hint` facts of one session for the next ordinary request.
-   * @param sessionId - session identity, when the request carries one.
-   * @returns `seeded`, `firstOrdinarySent`, and fork-parent identity for
-   * {@link buildAgentHint}.
-   */
   facts(sessionId: SessionId | undefined): {
-    seeded: boolean
-    firstOrdinarySent: boolean
-    parentSessionId: SessionId | undefined
+    seeded: boolean; firstOrdinarySent: boolean; parentSessionId: SessionId | undefined
   } {
     const state = sessionId === undefined ? undefined : this.states.get(String(sessionId))
-    return {
-      seeded: state?.seeded ?? false,
-      firstOrdinarySent: state?.firstOrdinarySent ?? false,
-      parentSessionId: state?.parentSessionId,
-    }
+    return { seeded: state?.seeded ?? false, firstOrdinarySent: state?.firstOrdinarySent ?? false,
+      parentSessionId: state?.parentSessionId }
   }
 
-  /**
-   * Wait — up to the configured cap — for the session's in-flight manage
-   * verb to settle. Fails open: a timeout resolves anyway with a warning,
-   * because a slow control plane must never block an ordinary request.
-   * @param sessionId - session identity, when the request carries one.
-   */
-  async awaitPendingOp(sessionId: SessionId | undefined): Promise<void> {
-    const pending = sessionId === undefined ? undefined : this.states.get(String(sessionId))?.pendingOp
-    if (pending === undefined) return
+  /** Prefetch is advisory. Pending/unknown mutations must not race new inference. */
+  async awaitPendingOp(sessionId: SessionId | undefined, signal?: AbortSignal): Promise<void> {
+    const state = sessionId === undefined ? undefined : this.states.get(String(sessionId))
+    if (state === undefined) return
+    const combined = signal === undefined ? this.signal : AbortSignal.any([signal, this.signal])
+    combined.throwIfAborted()
     let timer: ReturnType<typeof setTimeout> | undefined
-    const expiry = new Promise<void>((resolve) => {
-      timer = setTimeout(() => {
-        this.options.warn?.('llm-agent-hint: control barrier timed out; backend outcome remains unknown')
-        resolve()
-      }, this.options.pendingOpAwaitMs)
+    let onAbort: (() => void) | undefined
+    const deadline = new Promise<'expired'>((resolve, reject) => {
+      timer = setTimeout(() => resolve('expired'), this.options.pendingOpAwaitMs)
+      onAbort = () => reject(combined.reason)
+      combined.addEventListener('abort', onAbort, { once: true })
     })
     try {
-      await Promise.race([pending, expiry])
+      while (state.pendingOp !== undefined) {
+        const pending = state.pendingOp
+        if (await Promise.race([pending, deadline]) === 'expired') {
+          this.options.warn?.('llm-agent-hint: control barrier timed out; backend outcome remains unknown')
+          if (state.mutations > 0 || state.unsafe) throw new ControlBarrierError()
+          return
+        }
+      }
+      if (state.unsafe) throw new ControlBarrierError()
     } finally {
-      if (timer !== undefined) clearTimeout(timer)
+      clearTimeout(timer)
+      if (onAbort !== undefined) combined.removeEventListener('abort', onAbort)
     }
   }
 
-  /**
-   * Record one accepted ordinary request: flips `firstOrdinarySent` (so the
-   * next request never re-declares `start`) and remembers the model id for
-   * later manage requests. `seeded` stays a constructor fact: only
-   * `session/created` sets it, so a live fresh session never earns a
-   * `resume` prefetch between its consecutive ordinary requests.
-   * @param sessionId - session identity; `undefined` requests are ignored.
-   * @param model - model id reused by later manage requests.
-   */
-  noteOrdinaryRequest(sessionId: SessionId | undefined, model: string): void {
-    if (sessionId === undefined) return
-    const id = String(sessionId)
-    if (this.lastOrdinarySessionId !== undefined && this.lastOrdinarySessionId !== id) {
-      this.markForPause(this.lastOrdinarySessionId)
+  /** Hold mutations until the actual model stream finishes, errors or is cancelled. */
+  async beginOrdinary(sessionId: SessionId | undefined, model: string, signal?: AbortSignal): Promise<() => void> {
+    this.signal.throwIfAborted()
+    signal?.throwIfAborted()
+    if (sessionId === undefined) return () => {}
+    this.ensureResume(sessionId, model)
+    await this.awaitPendingOp(sessionId, signal)
+    this.signal.throwIfAborted()
+    signal?.throwIfAborted()
+    const state = this.state(String(sessionId))
+    // No await between checking the mutation queue and reserving the stream.
+    if (state.mutations > 0 || state.unsafe) throw new ControlBarrierError()
+    state.generation++
+    // Keep the state associated with this lease even if disposal races HTTP acceptance.
+    state.lastModel = model
+    if (state.active++ === 0) state.dataIdle = new Promise(resolve => { state.releaseData = resolve })
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      if (--state.active === 0) { state.releaseData?.(); state.releaseData = undefined; state.dataIdle = undefined }
     }
+  }
+
+  noteOrdinaryRequest(sessionId: SessionId | undefined, model: string): void {
+    if (sessionId === undefined || this.disposed) return
+    const id = String(sessionId)
+    if (this.lastOrdinarySessionId !== undefined && this.lastOrdinarySessionId !== id) this.markForPause(this.lastOrdinarySessionId)
     this.lastOrdinarySessionId = id
     const state = this.state(id)
     state.archived = false
@@ -155,186 +139,121 @@ export class LifecycleBridge {
     state.pausePending = false
     state.pauseSent = false
   }
-
-  /**
-   * `session/created`: record whether the session carries prior history.
-   * The actual `resume` prefetch is deferred to the first ordinary request
-   * so automatic startup restores do not fan out one manage request each.
-   * @param session - the freshly created session.
-   */
   onSessionCreated(session: Session): void {
-    const id = String(session.id)
-    const pending = this.states.get(id)?.pendingOp
-    this.states.delete(id)
-    const state = this.state(id)
-    state.pendingOp = pending
-    state.seeded = this.hasSeededConversation(session)
+    if (this.disposed) return
+    const state = this.state(String(session.id))
+    // Keep outstanding operations and uncertainty across disposal/reopen.
+    state.incarnation = {}
+    state.seeded = session.surface.nodes.length > 0
+    state.firstOrdinarySent = false
     state.resumeSent = false
+    state.resumeAttempt = {}
     state.agentStatus = 'idle'
     state.pausePending = false
     state.pauseSent = false
     state.parentSessionId = session.header.parentSession
   }
-
-  /**
-   * Whether the session surface already holds model-visible history, as
-   * opposed to a blank persisted session whose log holds only its
-   * `session/end-seed` marker. Only a conversation that ran a turn needs a
-   * KV-cache `resume`; a blank session should still declare `start` on its
-   * first request.
-   */
-  private hasSeededConversation(session: Session): boolean {
-    return session.surface.nodes.length > 0
-  }
-
-  /**
-   * Request the deferred `resume` prefetch once, just before the ordinary
-   * request (or composer draft) that needs it. Fires only when the
-   * coordinator's KV for the session may actually be gone: the session was
-   * created with prior history (`seeded`), or it was previously `pause`d
-   * (`pauseSent`). Anonymous, live-fresh, and already-resumed sessions no-op.
-   * @param sessionId - the session the request belongs to.
-   * @param model - the model id the resumed request will use.
-   */
   ensureResume(sessionId: SessionId | undefined, model: string): void {
-    if (sessionId === undefined) return
-    const id = String(sessionId)
-    const state = this.states.get(id)
-    if (state === undefined || !(state.seeded || state.pauseSent) || state.resumeSent) return
+    if (sessionId === undefined || this.disposed) return
+    const id = String(sessionId), state = this.states.get(id)
+    if (state === undefined || !(state.seeded || state.pauseSent) || state.resumeSent
+      || state.unsafe || Date.now() < state.nextResumeAt) return
     state.resumeSent = true
+    state.resumeAttempt = {}
     state.lastModel = model
-    this.track(id, () => this.options.client.send('resume', id, model))
+    this.track(id, 'resume', model)
   }
-
-  /**
-   * Track the live agent status so a pending pause fires only after the
-   * switched-away session reaches idle.
-   * @param sessionId - the agent/session identity whose status changed.
-   * @param status - the status just entered.
-   */
   onAgentStatus(sessionId: SessionId, status: AgentStatus): void {
-    const id = String(sessionId)
-    const state = this.state(id)
+    if (this.disposed) return
+    const id = String(sessionId), state = this.state(id)
     state.agentStatus = status
     if (status === 'idle') this.maybePauseIfIdle(id)
   }
-
-  /**
-   * The web composer started a draft in a session. This is the signal that a
-   * paused historical session should be resumed before the user submits it.
-   * @param sessionId - the session whose draft just became non-empty.
-   */
   onSessionComposing(sessionId: SessionId): void {
-    const id = String(sessionId)
-    const state = this.states.get(id)
+    const state = this.states.get(String(sessionId))
     if (state?.lastModel !== undefined && !state.archived) this.ensureResume(sessionId, state.lastModel)
   }
-
-  /**
-   * `session/event`: a successful compaction asks the coordinator to evict and rebuild.
-   * @param session - the session that emitted the event.
-   * @param event - the lifecycle event; only `compaction/end` is acted on.
-   */
   onSessionEvent(session: Session, event: SessionEvent): void {
-    if (event.type !== 'compaction/end') return
-    if (event.data.error !== undefined) return
-    const id = String(session.id)
-    const state = this.states.get(id)
-    if (state?.lastModel === undefined) return
-    const model = state.lastModel
-    this.track(id, () => this.options.client.send('compact', id, model))
+    if (event.type !== 'compaction/end' || event.data.error !== undefined) return
+    const state = this.states.get(String(session.id))
+    if (state?.lastModel !== undefined) this.track(String(session.id), 'compact', state.lastModel)
   }
-
-  /**
-   * `session/disposed`: terminal evict queued after prior controls; cleanup is generation-safe.
-   * @param session - the session being disposed.
-   */
   onSessionDisposed(session: Session): void {
-    const id = String(session.id)
+    const id = String(session.id), state = this.states.get(id)
     if (this.lastOrdinarySessionId === id) this.lastOrdinarySessionId = undefined
-    const state = this.states.get(id)
     if (state?.lastModel === undefined) { this.states.delete(id); return }
-    if (state.archived) {
-      void (state.pendingOp ?? Promise.resolve()).then(() => {
-        if (this.states.get(id) === state) this.states.delete(id)
-      })
-      return
-    }
-    const model = state.lastModel
-    void this.track(id, () => this.options.client.send('stop', id, model))
-      .then(() => { if (this.states.get(id) === state) this.states.delete(id) })
+    const incarnation = state.incarnation
+    const pending = state.archived ? state.pendingOp ?? Promise.resolve() : this.track(id, 'stop', state.lastModel)
+    void pending.then(() => {
+      // Unknown mutation outcomes remain quarantined even if the session reopens.
+      if (this.states.get(id) === state && state.incarnation === incarnation && !state.unsafe) this.states.delete(id)
+    })
   }
-
-  /**
-   * `workspace/session-archived`: advisory evict. The session may stay live
-   * and be unarchived later, so tracked state is kept.
-   * @param sessionId - the session that just became archived.
-   */
   onSessionArchived(sessionId: SessionId): void {
-    const id = String(sessionId)
-    const state = this.states.get(id)
+    const id = String(sessionId), state = this.states.get(id)
     if (state?.lastModel === undefined || state.archived) return
     state.archived = true
     state.pausePending = false
     state.pauseSent = true
     state.resumeSent = false
     if (this.lastOrdinarySessionId === id) this.lastOrdinarySessionId = undefined
-    const model = state.lastModel
-    this.track(id, () => this.options.client.send('stop', id, model))
+    this.track(id, 'stop', state.lastModel)
   }
-
-  /** Allow another archive cycle after the host successfully unarchives the session.
-   * @param sessionId - the restored session identity.
-   */
   onSessionUnarchived(sessionId: SessionId): void {
     const state = this.states.get(String(sessionId))
     if (state !== undefined) state.archived = false
   }
-
   private markForPause(id: string): void {
     const state = this.states.get(id)
     if (state === undefined || state.pauseSent || state.pausePending) return
     state.pausePending = true
     this.maybePauseIfIdle(id)
   }
-
   private maybePauseIfIdle(id: string): void {
     const state = this.states.get(id)
     if (state === undefined || !state.pausePending || state.agentStatus !== 'idle') return
     state.pausePending = false
     state.pauseSent = true
     state.resumeSent = false
-    const model = state.lastModel
-    this.track(id, () => this.options.client.send('pause', id, model))
+    this.track(id, 'pause', state.lastModel)
   }
-
   private state(id: string): SessionState {
     let state = this.states.get(id)
     if (state === undefined) {
-      state = {
-        archived: false,
-        seeded: false,
-        resumeSent: false,
-        agentStatus: 'idle',
-        pausePending: false,
-        pauseSent: false,
-        firstOrdinarySent: false,
-        parentSessionId: undefined,
-        lastModel: undefined,
-        pendingOp: undefined,
-      }
+      state = { archived: false, seeded: false, resumeSent: false, resumeAttempt: {}, nextResumeAt: 0,
+        agentStatus: 'idle', pausePending: false, pauseSent: false, firstOrdinarySent: false,
+        parentSessionId: undefined, lastModel: undefined, pendingOp: undefined, mutations: 0,
+        unsafe: false, generation: 0, incarnation: {}, active: 0, dataIdle: undefined, releaseData: undefined }
       this.states.set(id, state)
     }
     return state
   }
-
-  private track(id: string, send: () => Promise<void>): Promise<void> {
-    const state = this.state(id)
-    const dispatch = () => this.disposed ? Promise.resolve() : send()
-    const promise = state.pendingOp === undefined ? dispatch() : state.pendingOp.then(dispatch)
-    const tracked = promise.catch(error => {
+  private track(id: string, verb: SessionControlVerb, model?: string): Promise<void> {
+    if (this.disposed) return Promise.resolve()
+    const state = this.state(id), generation = state.generation
+    const resumeAttempt = state.resumeAttempt
+    const mutating = verb !== 'resume'
+    if (mutating) state.mutations++
+    const canSend = () => !this.disposed && !state.unsafe && state.generation === generation
+    const dispatch = () => canSend()
+      ? this.options.client.send(verb, id, model, this.signal, canSend)
+      : Promise.resolve<ControlResult>({ status: 'cancelled', dispatched: false })
+    const dependencies = [state.pendingOp, state.dataIdle].filter(value => value !== undefined)
+    const promise = dependencies.length === 0 ? dispatch() : Promise.all(dependencies).then(dispatch)
+    const tracked = promise.then(result => {
+      if (mutating && (result.status === 'unknown' || (result.status === 'cancelled' && result.dispatched))) state.unsafe = true
+      // A prefetch can fail after the advisory barrier already let data start.
+      // Its own attempt identity, rather than the data generation, owns recovery.
+      if (verb === 'resume' && state.resumeAttempt === resumeAttempt
+        && (result.status === 'failed' || (result.status === 'cancelled' && !result.dispatched))) {
+        state.resumeSent = false
+        state.nextResumeAt = Date.now() + 1000
+      }
+    }).catch(error => {
+      if (mutating) state.unsafe = true
       this.options.warn?.('llm-agent-hint: control operation failed', error)
     }).finally(() => {
+      if (mutating) state.mutations--
       if (state.pendingOp === tracked) state.pendingOp = undefined
     })
     state.pendingOp = tracked

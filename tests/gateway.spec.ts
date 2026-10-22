@@ -14,7 +14,7 @@ describe('stock rc.1 Gateway', () => {
   it('discovers a third-party Remote method at runtime and withdraws it on unload', async () => {
     ctx = new Context()
     const calls: string[] = []
-    const client = { send: (verb: string, id: string) => { calls.push(`${verb}:${id}`); return Promise.resolve() } } as SessionControlClient
+    const client = { send: (verb: string, id: string) => { calls.push(`${verb}:${id}`); return Promise.resolve({ status: 'accepted', httpStatus: 200 }) } } as SessionControlClient
     const bridge = new LifecycleBridge({ client, pendingOpAwaitMs: 20 })
     const a = SessionId('owned-a'), b = SessionId('owned-b')
     bridge.noteOrdinaryRequest(a, 'model')

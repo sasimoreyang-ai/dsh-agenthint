@@ -1,459 +1,308 @@
-/** OpenAI chat/completions transport for the agent-hint route.
- *
- * The Messages transport loses `agent_hint` on engines whose Anthropic
- * entrypoint does not declare the field: the request model drops unknown keys
- * before the session-aware manager sees them, so lifecycle control silently
- * no-ops. The chat/completions entrypoint declares the field on those same
- * engines, so speaking that protocol keeps the hint intact without touching the
- * engine.
- *
- * @module dsh-llm-agent-hint/chat-adapter
- */
-
-import { attributionHeaders, LlmAdapter, LlmError, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
-import type {
-  ContentBlock,
-  FinishReason,
-  GenerateOptions,
-  LlmModelInfo,
-  LlmModelReasoningInfo,
-  LlmResolvedModelInfo,
-  PreparedAdapterCall,
-  StreamChunk,
-  TokenUsage,
-} from '@deepseek-ai/dsh-llm'
-import { catalogModelInfo } from '@deepseek-ai/dsh-llm-deepseek'
-import type { DeepSeekCatalogModel } from '@deepseek-ai/dsh-llm-deepseek'
+/** Chat Completions transport with lossless roles, bounded streams and session leases. */
+import { attributionHeaders, LlmAdapter, LlmError, ReasoningEffortId, ToolCallId,
+  ProviderRequestId, isContextWindowExceededError, isQuotaExceededError, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, FinishReason, GenerateOptions, LlmModelInfo, LlmResolvedModelInfo,
+  PreparedAdapterCall, StreamChunk, TokenUsage, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm'
+import { catalogModelInfo, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DEFAULT_STREAM_IDLE_TIMEOUT_MS } from '@deepseek-ai/dsh-llm-deepseek'
+import type { DeepSeekConnectionOptions } from '@deepseek-ai/dsh-llm-deepseek'
+import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import type { AgentHintWire } from './types.ts'
+import type { LifecycleBridge } from './lifecycle-bridge.ts'
 
-/** One assistant tool call in the OpenAI shape. */
-interface ChatToolCall {
-  id: string
-  type: 'function'
-  function: { name: string; arguments: string }
+export interface ChatConnectionOptions {
+  baseURL: string
+  maxTokens?: number
+  models?: DeepSeekConnectionOptions['models']
+  defaultContextWindow?: number
+  defaults?: DeepSeekConnectionOptions['defaults']
+  streamIdleTimeoutMs?: number
+  retryPolicy?: ResolvedRetryPolicy
 }
-
-/** One message in the OpenAI chat shape. */
-interface ChatMessage {
-  role: 'system' | 'user' | 'assistant'
-  content?: string
-  tool_calls?: ChatToolCall[]
-}
-
-/** One tool declaration in the OpenAI shape. */
-interface ChatTool {
-  type: 'function'
-  function: { name: string; description: string; parameters: Record<string, unknown> }
-}
-
-/** Reasoning efforts this route offers, mirroring the coordinator's vocabulary. */
-const EFFORT_OFF = ReasoningEffortId('off')
-const EFFORT_LOW = ReasoningEffortId('low')
-const EFFORT_HIGH = ReasoningEffortId('high')
-const EFFORT_MAX = ReasoningEffortId('max')
-
-/** Wire value for each effort; the coordinator spells "off" as "none". */
-const EFFORT_WIRE: ReadonlyMap<string, string> = new Map([
-  [String(EFFORT_OFF), 'none'],
-  [String(EFFORT_LOW), 'low'],
-  [String(EFFORT_HIGH), 'high'],
-  [String(EFFORT_MAX), 'max'],
-])
-
-/** Selectable efforts advertised to the model picker. */
-const REASONING: LlmModelReasoningInfo = {
-  efforts: [
-    { id: EFFORT_OFF, name: 'Off', description: 'Skip reasoning for simple tasks.' },
-    { id: EFFORT_LOW, name: 'Low', description: 'Short reasoning for routine edits.' },
-    { id: EFFORT_HIGH, name: 'High', description: 'Deeper reasoning for hard problems.' },
-    { id: EFFORT_MAX, name: 'Max', description: 'DeepSeek V4 series maximum effort.' },
-  ],
-  defaultEffort: EFFORT_HIGH,
-}
-
-/** Body sent to the coordinator's chat/completions entrypoint. */
-interface ChatRequestBody {
+export interface ChatRequestFacts {
+  sessionId: string | undefined
+  purpose: GenerateOptions['purpose']
   model: string
-  messages: ChatMessage[]
-  stream: true
-  stream_options: { include_usage: true }
-  max_tokens?: number
-  temperature?: number
-  stop?: string[]
-  tools?: ChatTool[]
-  reasoning_effort?: string
-  agent_hint?: AgentHintWire
+  signal: AbortSignal
 }
-
-/** Connection facts the owning plugin resolves per request. */
-export interface ChatAdapterDependencies {
-  /** Resolved endpoint and generation defaults for this generation. */
-  options(): { baseURL: string; maxTokens?: number | undefined }
-  /** Provider label shown by selectors. */
+export interface ChatAdapterDependencies<C extends ChatConnectionOptions = ChatConnectionOptions> {
+  options(): C
   providerName?: string
-  /** Advisory model catalog for selectors. */
+  /** Authentication must resolve from this exact connection, never current options(). */
+  resolveAuth(connection: C): Promise<{ headers: Record<string, string> }>
+  prepareHint?(request: ChatRequestFacts): AgentHintWire | undefined | Promise<AgentHintWire | undefined>
+  onAccepted?(request: ChatRequestFacts): void
+  bridge?: LifecycleBridge
+  /** Plugin lifetime, including when lifecycle controls are disabled. */
+  signal?: AbortSignal
+  /** Kept for consumers constructing this adapter directly. */
   discoverModels?(provider: string): readonly LlmModelInfo[] | Promise<readonly LlmModelInfo[]>
-  /** Auth headers for this generation; empty sends unauthenticated requests. */
-  resolveAuth(): Promise<{ headers: Record<string, string> }>
-  /** Hint to merge into the body, or `undefined` to send none.
-   *
-   * Asynchronous so the caller can arm the control-plane barrier before the
-   * request is serialized; the transport awaits it exactly once per call.
-   */
-  prepareHint?(
-    request: { sessionId: string | undefined; purpose: GenerateOptions['purpose'] },
-  ): AgentHintWire | undefined | Promise<AgentHintWire | undefined>
-  /** Notified once the endpoint accepted the request, mirroring the extension `accept` transaction. */
-  onAccepted?(request: { sessionId: string | undefined }): void
 }
-
-/** Narrow one provider error body to the fields this transport reports. */
-interface ProviderErrorBody {
-  error?: { message?: unknown }
-  detail?: unknown
+interface ChatMessage {
+  role: 'system' | 'developer' | 'user' | 'assistant' | 'tool'
+  content: string
+  tool_call_id?: string
+  tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[]
+  reasoning_content?: string
 }
-
-/** Compose a failure message from a non-2xx response. */
-function describeFailure(status: number, body: string): string {
-  let parsed: ProviderErrorBody | undefined
-  try {
-    parsed = JSON.parse(body) as ProviderErrorBody
-  } catch {
-    // Non-JSON gateway bodies are reported verbatim by the caller.
-  }
-  const message = typeof parsed?.error?.message === 'string'
-    ? parsed.error.message
-    : typeof parsed?.detail === 'string' ? parsed.detail : undefined
-  return message === undefined
-    ? `chat/completions request failed with HTTP ${status}`
-    : `chat/completions request failed with HTTP ${status}: ${message}`
+const malformed = (message: string) => new LlmError(`chat/completions: ${message}`, 'MALFORMED_RESPONSE')
+function record(value: unknown): Record<string, any> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw malformed('expected an object')
+  return value as Record<string, any>
 }
-
-/** Concatenate the text blocks of one content list.
- *
- * Reasoning, image, file and tool-declaration blocks have no chat/completions
- * equivalent on the coordinator, so they are dropped rather than rejected: a
- * session that accumulated them must still be replayable.
- */
-function textOf(blocks: readonly ContentBlock[]): string {
-  const parts: string[] = []
+function requestText(blocks: readonly ContentBlock[], role: string): string {
+  const text: string[] = []
   for (const block of blocks) {
-    if (block.type === 'text') parts.push(block.text)
+    if (block.type === 'text') text.push(block.text)
+    else if (role === 'assistant' && (block.type === 'tool-call' || block.type === 'reasoning')) continue
+    // Current tool schemas are sent in full. These historical activation markers
+    // are intentionally projected away for a route without native tool updates.
+    else if (role === 'developer' && (block.type === 'tool-addition' || block.type === 'tool-removal')) continue
+    else throw new LlmError(`Chat transport does not support ${block.type} content; use a compatible route or a text representation`, 'UNSUPPORTED_CONTENT')
   }
-  return parts.join('\n')
+  return text.join('\n')
 }
-
-/** Collect the assistant tool calls carried by one content list. */
-function toolCallsOf(blocks: readonly ContentBlock[]): ChatToolCall[] {
-  const calls: ChatToolCall[] = []
-  for (const block of blocks) {
-    if (block.type !== 'tool-call') continue
-    calls.push({
-      id: String(block.id),
-      type: 'function',
-      function: { name: block.name, arguments: block.arguments },
-    })
+function toChatMessage(message: GenerateOptions['messages'][number]): ChatMessage | undefined {
+  const role = message.role
+  if (!['system', 'developer', 'user', 'assistant', 'tool'].includes(role)) throw new LlmError('Unsupported message role', 'INVALID_REQUEST')
+  const blocks = typeof message.content === 'string' ? [{ type: 'text' as const, text: message.content }] : message.content
+  const content = requestText(blocks, role)
+  if (role === 'developer' && blocks.length > 0 && blocks.every(b => b.type === 'tool-addition' || b.type === 'tool-removal')) return undefined
+  const result: ChatMessage = { role, content }
+  if (role === 'tool') {
+    if (!('toolCallId' in message) || typeof message.toolCallId !== 'string' || !message.toolCallId) throw new LlmError('Tool result requires toolCallId', 'INVALID_REQUEST')
+    result.tool_call_id = message.toolCallId
   }
-  return calls
+  if (role === 'assistant') {
+    const calls = blocks.filter(b => b.type === 'tool-call')
+    if (calls.length) result.tool_calls = calls.map(call => ({ id: String(call.id), type: 'function', function: { name: call.name, arguments: call.arguments } }))
+    const reasoning = blocks.filter(b => b.type === 'reasoning').map(b => b.text).join('\n')
+    if (reasoning) result.reasoning_content = reasoning
+  }
+  return result
 }
-
-/** Map one harness message onto the chat/completions shape. */
-function toChatMessage(message: GenerateOptions['messages'][number]): ChatMessage {
-  const content = message.content
-  if (typeof content === 'string') {
-    return { role: message.role === 'assistant' ? 'assistant' : 'user', content }
-  }
-  const blocks = content as readonly ContentBlock[]
-  const text = textOf(blocks)
-  if (message.role === 'assistant') {
-    const calls = toolCallsOf(blocks)
-    // `content` must always be present: the coordinator rejects a message that
-    // omits it, even when the turn is tool calls only.
-    return {
-      role: 'assistant',
-      content: text,
-      ...calls.length === 0 ? {} : { tool_calls: calls },
-    }
-  }
-  return { role: 'user', content: text }
+/** Shared by data and control planes; a /v1 root is never duplicated. */
+export function chatCompletionsURL(baseURL: string): string {
+  const root = baseURL.replace(/\/+$/, '')
+  return `${root.endsWith('/v1') ? root : `${root}/v1`}/chat/completions`
 }
-
-/** Build the request body for one call. */
-function buildBody(
-  options: GenerateOptions,
-  defaults: { maxTokens?: number | undefined },
-  hint: AgentHintWire | undefined,
-): ChatRequestBody {
-  const messages: ChatMessage[] = []
-  if (options.system !== undefined && options.system.length > 0) {
-    messages.push({ role: 'system', content: options.system })
-  }
-  for (const message of options.messages) messages.push(toChatMessage(message))
-  const body: ChatRequestBody = {
-    model: options.model,
-    messages,
-    stream: true,
-    stream_options: { include_usage: true },
-  }
-  const maxTokens = options.maxTokens ?? defaults.maxTokens
-  if (maxTokens !== undefined) body.max_tokens = maxTokens
-  if (options.temperature !== undefined) body.temperature = options.temperature
-  if (options.stop !== undefined && options.stop.length > 0) body.stop = options.stop
-  if (options.tools !== undefined && options.tools.length > 0) {
-    body.tools = options.tools.map(tool => ({
-      type: 'function',
-      function: { name: tool.name, description: tool.description, parameters: tool.parameters },
-    }))
-  }
-  if (options.reasoningEffort !== undefined) {
-    const wire = EFFORT_WIRE.get(String(options.reasoningEffort))
-    if (wire !== undefined) body.reasoning_effort = wire
-  }
-  if (hint !== undefined) body.agent_hint = hint
-  return body
-}
-
-/** One decoded SSE payload, narrowed to the fields this transport reads. */
-interface ChatStreamEvent {
-  choices?: {
-    delta?: {
-      content?: unknown
-      reasoning_content?: unknown
-      reasoning?: unknown
-      tool_calls?: unknown
-    }
-    finish_reason?: unknown
-  }[]
-  usage?: {
-    prompt_tokens?: unknown
-    completion_tokens?: unknown
-    total_tokens?: unknown
-    prompt_tokens_details?: { cached_tokens?: unknown }
-    completion_tokens_details?: { reasoning_tokens?: unknown }
+function modelInfo(connection: ChatConnectionOptions, provider: string, model: string): LlmResolvedModelInfo {
+  const configured = connection.models?.find(entry => entry.id === model)
+  const off = connection.defaults?.thinking === 'disabled'
+  const levels = off ? ['off'] : ['off', 'low', 'high', 'max']
+  return {
+    ...catalogModelInfo(provider, configured ?? { id: model }),
+    // This transport deliberately rejects native images/files; do not advertise them.
+    inputModalities: ['text'],
+    context: { contextWindow: configured?.contextWindow ?? connection.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW },
+    defaultMaxTokens: configured?.maxTokens ?? connection.maxTokens ?? DEFAULT_MAX_TOKENS,
+    reasoning: { efforts: levels.map(level => ({ id: ReasoningEffortId(level), name: level })),
+      defaultEffort: ReasoningEffortId(off ? 'off' : connection.defaults?.reasoningEffort ?? 'high') },
   }
 }
-
-/** One streamed tool-call fragment. */
-interface ChatToolCallDelta {
-  index?: unknown
-  id?: unknown
-  function?: { name?: unknown; arguments?: unknown }
+function buildBody(options: GenerateOptions, connection: ChatConnectionOptions, hint: AgentHintWire | undefined) {
+  const info = modelInfo(connection, options.provider, options.model)
+  const effort = String(options.reasoningEffort ?? info.reasoning!.defaultEffort)
+  if (!info.reasoning!.efforts.some(e => String(e.id) === effort)) throw new LlmError(`Unsupported reasoning effort: ${effort}`, 'INVALID_REQUEST')
+  const messages = options.messages.map(toChatMessage).filter((m): m is ChatMessage => m !== undefined)
+  if (options.system) messages.unshift({ role: 'system', content: options.system })
+  return { model: options.model, messages, stream: true, stream_options: { include_usage: true },
+    max_tokens: options.maxTokens ?? info.defaultMaxTokens,
+    reasoning_effort: effort === 'off' ? 'none' : effort,
+    ...options.temperature === undefined ? {} : { temperature: options.temperature },
+    ...!options.stop?.length ? {} : { stop: options.stop },
+    ...!options.tools?.length ? {} : { tools: options.tools.map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } })) },
+    ...hint === undefined ? {} : { agent_hint: hint } }
 }
-
-/** Map a provider finish reason onto the harness vocabulary. */
-function finishOf(raw: unknown): FinishReason {
-  switch (raw) {
-    case 'tool_calls':
-    case 'function_call':
-      return { kind: 'tool-calls' }
-    case 'length':
-      return { kind: 'max-tokens' }
-    default:
-      return { kind: 'stop' }
-  }
+function providerError(raw: unknown, status?: number, headers?: Headers): LlmError {
+  const envelope = raw !== null && typeof raw === 'object' ? raw as Record<string, any> : {}
+  const error = envelope.error !== null && typeof envelope.error === 'object' ? envelope.error : envelope
+  const message = typeof error.message === 'string' ? error.message : typeof envelope.detail === 'string' ? envelope.detail : `Chat request failed (${status ?? 'stream error'})`
+  const detail = `${error.code ?? ''} ${error.type ?? ''} ${message}`
+  const code = status === 401 || status === 403 ? 'AUTH' : status === 402 || isQuotaExceededError(detail) ? 'QUOTA'
+    : status === 429 || error.type === 'rate_limit_error' ? 'RATE_LIMIT' : isContextWindowExceededError(detail) ? 'CONTEXT_WINDOW_EXCEEDED'
+    : status === 408 || status === 504 ? 'TIMEOUT' : status === 400 || status === 413 ? 'INVALID_REQUEST'
+    : status === undefined || status >= 500 ? 'SERVER' : `HTTP_${status}`
+  const retry = headers?.get('retry-after')
+  const delay = retry == null ? NaN : /^\d+(?:\.\d+)?$/.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now()
+  const id = headers?.get('x-request-id') ?? headers?.get('request-id')
+  return new LlmError(message, code, { ...status === undefined ? {} : { status },
+    ...Number.isFinite(delay) && delay > 0 ? { providerRetryAfterMs: delay } : {},
+    ...id ? { requestId: ProviderRequestId(id) } : {} })
 }
-
-/** Decode an SSE byte stream into `data:` payloads. */
-async function* sseEvents(response: Response): AsyncGenerator<ChatStreamEvent, void, void> {
-  if (response.body === null) throw new LlmError('chat/completions returned no body', 'TRANSPORT')
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
+/** Bound promises that do not themselves support AbortSignal (credential resolvers). */
+async function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted()
+  let abort: (() => void) | undefined
+  try { return await Promise.race([promise, new Promise<never>((_, reject) => {
+    abort = () => reject(signal.reason); signal.addEventListener('abort', abort, { once: true })
+  })]) } finally { if (abort) signal.removeEventListener('abort', abort) }
+}
+/** SSE line state handles LF, CRLF, CR, chunk boundaries and multi-line data. */
+async function* sseEvents(response: Response, signal: AbortSignal, activity: () => void): AsyncGenerator<Record<string, any> | 'done'> {
+  if (!response.body) throw malformed('missing response body')
+  const reader = response.body.getReader(), decoder = new TextDecoder()
+  let buffer = '', data: string[] = [], size = 0, eventName = ''
+  const frame = () => { const value = { data: data.join('\n'), eventName }; data = []; size = 0; eventName = ''; return value }
   try {
     while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
+      const next = await abortable(reader.read(), signal)
+      if (!next.done) activity()
+      buffer += next.done ? decoder.decode() : decoder.decode(next.value, { stream: true })
       while (true) {
-        const cut = buffer.indexOf('\n\n')
-        if (cut < 0) break
-        const frame = buffer.slice(0, cut)
-        buffer = buffer.slice(cut + 2)
-        for (const line of frame.split('\n')) {
-          if (!line.startsWith('data:')) continue
-          const payload = line.slice(5).trim()
-          if (payload.length === 0 || payload === '[DONE]') continue
-          try {
-            yield JSON.parse(payload) as ChatStreamEvent
-          } catch {
-            // A malformed frame is skipped; the stream stays usable.
-          }
-        }
+        const cut = buffer.search(/[\r\n]/)
+        if (cut < 0 || (!next.done && buffer[cut] === '\r' && cut === buffer.length - 1)) break
+        const line = buffer.slice(0, cut)
+        buffer = buffer.slice(cut + (buffer[cut] === '\r' && buffer[cut + 1] === '\n' ? 2 : 1))
+        if (!line) {
+          const event = frame()
+          if (!event.data) continue
+          if (event.data.trim() === '[DONE]') { yield 'done'; return }
+          let parsed: unknown
+          try { parsed = JSON.parse(event.data) } catch { throw malformed('invalid SSE JSON') }
+          const value = record(parsed)
+          if (event.eventName === 'error' || value.error !== undefined) throw providerError(value)
+          yield value
+        } else if (line.startsWith('data:')) {
+          const value = line.slice(5).replace(/^ /, '')
+          data.push(value); size += value.length
+        } else if (line.startsWith('event:')) eventName = line.slice(6).trim()
+        if (size > 4 * 1024 * 1024) throw malformed('SSE event exceeds 4 MiB')
       }
+      if (buffer.length > 4 * 1024 * 1024) throw malformed('SSE line exceeds 4 MiB')
+      if (next.done) break
     }
-  } finally {
-    reader.releaseLock()
-  }
+    // An unterminated data tail must never turn into a successful answer.
+    if (data.length || buffer.trim()) throw malformed('unterminated SSE event')
+  } finally { await reader.cancel().catch(() => undefined); reader.releaseLock() }
 }
-
-/** Translate provider events into the harness stream protocol. */
-async function* translate(events: AsyncIterable<ChatStreamEvent>): AsyncGenerator<StreamChunk, void, void> {
-  let textIndex: number | undefined
-  let reasoningIndex: number | undefined
-  const calls = new Map<number, { index: number; id: ReturnType<typeof ToolCallId>; name: string }>()
-  let nextIndex = 0
-  let reason: FinishReason | undefined
-  let usage: TokenUsage | undefined
-
+function finishOf(raw: unknown): FinishReason {
+  if (raw === 'stop') return { kind: 'stop' }
+  if (raw === 'tool_calls' || raw === 'function_call') return { kind: 'tool-calls' }
+  if (raw === 'length') return { kind: 'max-tokens' }
+  if (raw === 'content_filter') throw new LlmError('Provider refused the response', 'REFUSAL')
+  throw malformed('unknown finish reason')
+}
+async function* translate(events: AsyncIterable<Record<string, any> | 'done'>): AsyncGenerator<StreamChunk> {
+  let textIndex: number | undefined, reasoningIndex: number | undefined, index = 0
+  let reason: FinishReason | undefined, usage: TokenUsage | undefined
+  const calls = new Map<number, { index: number; id: string; name: string; arguments: string }>()
   for await (const event of events) {
-    if (event.usage !== undefined) {
-      const prompt = typeof event.usage.prompt_tokens === 'number' ? event.usage.prompt_tokens : 0
-      const cached = typeof event.usage.prompt_tokens_details?.cached_tokens === 'number'
-        ? event.usage.prompt_tokens_details.cached_tokens
-        : 0
-      const output = typeof event.usage.completion_tokens === 'number' ? event.usage.completion_tokens : 0
-      usage = {
-        inputTokens: Math.max(0, prompt - cached),
-        outputTokens: output,
-        ...cached === 0 ? {} : { cacheReadTokens: cached },
-        ...typeof event.usage.total_tokens === 'number' ? { totalTokens: event.usage.total_tokens } : {},
-        ...typeof event.usage.completion_tokens_details?.reasoning_tokens === 'number'
-          ? { reasoningTokens: event.usage.completion_tokens_details.reasoning_tokens }
-          : {},
-      }
+    if (event === 'done') break
+    if (event.usage != null) {
+      const raw = record(event.usage)
+      const count = (v: unknown) => { if (!Number.isSafeInteger(v) || (v as number) < 0) throw malformed('invalid token usage'); return v as number }
+      const input = count(raw.prompt_tokens ?? 0), output = count(raw.completion_tokens ?? 0)
+      const cached = count(raw.prompt_tokens_details?.cached_tokens ?? raw.prompt_cache_hit_tokens ?? 0)
+      if (cached > input) throw malformed('cached token count exceeds input')
+      usage = { inputTokens: input - cached, outputTokens: output, ...cached ? { cacheReadTokens: cached } : {},
+        ...raw.total_tokens === undefined ? {} : { totalTokens: count(raw.total_tokens) },
+        ...raw.completion_tokens_details?.reasoning_tokens === undefined ? {} : { reasoningTokens: count(raw.completion_tokens_details.reasoning_tokens) } }
     }
-    for (const choice of event.choices ?? []) {
-      const delta = choice.delta
-      if (delta !== undefined) {
-        // Coordinators differ: some emit reasoning_content (OpenAI-compatible
-        // convention), others reasoning. Accept either.
-        const reasoning = typeof delta.reasoning_content === 'string'
-          ? delta.reasoning_content
-          : typeof delta.reasoning === 'string' ? delta.reasoning : ''
-        if (reasoning.length > 0) {
-          if (reasoningIndex === undefined) {
-            reasoningIndex = nextIndex++
-            yield { type: 'block-start', index: reasoningIndex, blockType: 'reasoning' }
-          }
-          yield { type: 'reasoning-delta', index: reasoningIndex, text: reasoning }
-        }
-        if (typeof delta.content === 'string' && delta.content.length > 0) {
-          if (textIndex === undefined) {
-            textIndex = nextIndex++
-            yield { type: 'block-start', index: textIndex, blockType: 'text' }
-          }
-          yield { type: 'text-delta', index: textIndex, text: delta.content }
-        }
-        if (Array.isArray(delta.tool_calls)) {
-          for (const raw of delta.tool_calls) {
-            const call = raw as ChatToolCallDelta
-            const wireIndex = typeof call.index === 'number' ? call.index : 0
-            let state = calls.get(wireIndex)
-            if (state === undefined) {
-              state = {
-                index: nextIndex++,
-                id: ToolCallId(typeof call.id === 'string' && call.id.length > 0 ? call.id : `call_${wireIndex}`),
-                name: typeof call.function?.name === 'string' ? call.function.name : '',
-              }
-              calls.set(wireIndex, state)
-              yield { type: 'block-start', index: state.index, blockType: 'tool-call' }
-              yield { type: 'tool-call-delta', index: state.index, id: state.id, name: state.name, argumentsDelta: '' }
-            }
-            const args = call.function?.arguments
-            if (typeof args === 'string' && args.length > 0) {
-              yield { type: 'tool-call-delta', index: state.index, id: state.id, argumentsDelta: args }
-            }
+    if (event.choices === undefined && event.usage === undefined) throw malformed('missing choices/usage')
+    if (event.choices !== undefined && !Array.isArray(event.choices)) throw malformed('choices must be an array')
+    if (event.choices?.length > 1) throw malformed('multiple choices are not supported')
+    for (const raw of event.choices ?? []) {
+      const choice = record(raw), delta = record(choice.delta ?? {})
+      const reasoning = delta.reasoning_content ?? delta.reasoning
+      if (reason !== undefined && (delta.content || reasoning || delta.tool_calls?.length)) throw malformed('content after finish reason')
+      if (reasoning !== undefined && typeof reasoning !== 'string') throw malformed('invalid reasoning delta')
+      if (reasoning) {
+        if (reasoningIndex === undefined) { reasoningIndex = index++; yield { type: 'block-start', index: reasoningIndex, blockType: 'reasoning' } }
+        yield { type: 'reasoning-delta', index: reasoningIndex, text: reasoning }
+      }
+      if (delta.content != null && typeof delta.content !== 'string') throw malformed('invalid text delta')
+      if (delta.content) {
+        if (textIndex === undefined) { textIndex = index++; yield { type: 'block-start', index: textIndex, blockType: 'text' } }
+        yield { type: 'text-delta', index: textIndex, text: delta.content }
+      }
+      if (delta.tool_calls !== undefined) {
+        if (!Array.isArray(delta.tool_calls)) throw malformed('invalid tool calls')
+        for (const rawCall of delta.tool_calls) {
+          const call = record(rawCall)
+          if (!Number.isSafeInteger(call.index) || call.index < 0) throw malformed('invalid tool index')
+          let state = calls.get(call.index)
+          if (!state) { state = { index: index++, id: '', name: '', arguments: '' }; calls.set(call.index, state); yield { type: 'block-start', index: state.index, blockType: 'tool-call' } }
+          if (call.id !== undefined) { if (typeof call.id !== 'string') throw malformed('invalid tool id'); if (call.id !== state.id) state.id += call.id }
+          if (call.function !== undefined) {
+            const fn = record(call.function)
+            if (fn.name !== undefined) { if (typeof fn.name !== 'string') throw malformed('invalid tool name'); state.name += fn.name }
+            if (fn.arguments !== undefined) { if (typeof fn.arguments !== 'string') throw malformed('invalid tool arguments'); state.arguments += fn.arguments }
           }
         }
       }
-      if (choice.finish_reason != null) reason = finishOf(choice.finish_reason)
+      if (choice.finish_reason != null) {
+        if (reason !== undefined) throw malformed('duplicate finish reason')
+        reason = finishOf(choice.finish_reason)
+      }
     }
   }
-
-  if (reason === undefined) reason = { kind: 'stop' }
-  if (reason.kind === 'stop' && textIndex === undefined && calls.size === 0) {
-    throw new LlmError('chat/completions returned no content', 'EMPTY_RESPONSE')
+  if (!reason) throw malformed('stream ended without a finish reason')
+  if (reason.kind === 'tool-calls' && !calls.size) throw malformed('tool finish without calls')
+  if (calls.size && reason.kind === 'stop') throw malformed('tool calls without a tool finish')
+  const ids = new Set<string>()
+  if (reason.kind === 'tool-calls') for (const call of calls.values()) {
+    if (!call.id || !call.name) throw malformed('incomplete tool identity')
+    if (ids.has(call.id)) throw malformed('duplicate tool identity')
+    ids.add(call.id)
+    const args = call.arguments || '{}'
+    try { JSON.parse(args) } catch { throw malformed('incomplete tool arguments') }
+    yield { type: 'tool-call-delta', index: call.index, id: ToolCallId(call.id), name: call.name, argumentsDelta: args }
   }
-  if (usage !== undefined) yield { type: 'usage', usage }
+  if (reason.kind === 'stop' && textIndex === undefined) throw new LlmError('Chat returned no answer', 'EMPTY_RESPONSE')
+  if (usage) yield { type: 'usage', usage }
   yield { type: 'finish', reason }
 }
-
-/** Adapter speaking the coordinator's OpenAI chat/completions entrypoint. */
-export class ChatCompletionsAdapter extends LlmAdapter {
-  readonly #dependencies: ChatAdapterDependencies
-
-  constructor(dependencies: ChatAdapterDependencies) {
-    super()
-    this.#dependencies = dependencies
-  }
-
-  override providerInfo(provider: string) {
-    return { id: provider, name: this.#dependencies.providerName ?? 'DeepSeek (agent-hint)' }
-  }
-
+export class ChatCompletionsAdapter<C extends ChatConnectionOptions = ChatConnectionOptions> extends LlmAdapter {
+  constructor(private readonly dependencies: ChatAdapterDependencies<C>) { super() }
+  override providerInfo(provider: string) { return { id: provider, name: this.dependencies.providerName ?? 'DeepSeek (agent-hint)' } }
+  override providerRetryPolicy(_provider: string) { return this.dependencies.options().retryPolicy ?? resolveRetryPolicy(undefined, 'agent-hint.retryPolicy') }
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    return await this.#dependencies.discoverModels?.(provider) ?? []
+    const options = this.dependencies.options()
+    const models = this.dependencies.discoverModels ? await this.dependencies.discoverModels(provider) : (options.models ?? []).map(m => catalogModelInfo(provider, m))
+    return models.map(m => ({ ...m, inputModalities: ['text'] }))
   }
-
-  override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
-    return Promise.resolve(this.#modelInfo(provider, model))
+  override async resolveModel(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
+    signal?.throwIfAborted(); return modelInfo(this.dependencies.options(), provider, model)
   }
-
-  override prepareCall(provider: string, model: string): Promise<PreparedAdapterCall> {
-    const connection = this.#dependencies.options()
-    return Promise.resolve({
-      model: this.#modelInfo(provider, model),
-      stream: options => this.#generate(options, connection),
-    })
+  override async prepareCall(provider: string, model: string, signal?: AbortSignal): Promise<PreparedAdapterCall> {
+    signal?.throwIfAborted()
+    const connection = this.dependencies.options()
+    return { model: modelInfo(connection, provider, model), stream: options => this.generate(options, connection) }
   }
-
-  override stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    return this.#generate(options, this.#dependencies.options())
-  }
-
-  #modelInfo(provider: string, model: string): LlmResolvedModelInfo {
-    const connection = this.#dependencies.options()
-    const catalog: DeepSeekCatalogModel = {
-      id: model,
-      ...connection.maxTokens === undefined ? {} : { maxTokens: connection.maxTokens },
-    }
-    return { ...catalogModelInfo(provider, catalog), reasoning: REASONING }
-  }
-
-  async *#generate(
-    options: GenerateOptions,
-    connection: { baseURL: string; maxTokens?: number | undefined },
-  ): AsyncGenerator<StreamChunk, void, void> {
-    options.signal?.throwIfAborted()
-    const request = {
-      sessionId: options.sessionId === undefined ? undefined : String(options.sessionId),
-      purpose: options.purpose,
-    }
-    const hint = await this.#dependencies.prepareHint?.(request)
-    const body = buildBody(options, connection, hint)
-    const auth = await this.#dependencies.resolveAuth()
-    // The coordinator mounts OpenAI routes under `/v1`; a baseURL that already
-    // names that root must not grow a second one.
-    const root = connection.baseURL.replace(/\/+$/, '')
-    const url = `${root.endsWith('/v1') ? root : `${root}/v1`}/chat/completions`
-    let response: Response
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        ...options.signal === undefined ? {} : { signal: options.signal },
-        body: JSON.stringify(body),
-        redirect: 'error',
-        headers: {
-          ...attributionHeaders(),
-          'content-type': 'application/json',
-          accept: 'text/event-stream',
-          ...auth.headers,
-        },
-      })
-    } catch (error) {
-      if (options.signal?.aborted) throw new LlmError('chat/completions request aborted', 'ABORTED', { cause: error })
-      throw new LlmError('chat/completions transport failed', 'TRANSPORT', { cause: error })
-    }
-    if (!response.ok) {
-      throw new LlmError(describeFailure(response.status, await response.text()), 'INVALID_RESPONSE')
-    }
-    this.#dependencies.onAccepted?.(request)
-    try {
-      yield* translate(sseEvents(response))
-    } catch (error) {
+  override stream(options: GenerateOptions): AsyncIterable<StreamChunk> { return this.generate(options, this.dependencies.options()) }
+  private async *generate(options: GenerateOptions, connection: C): AsyncGenerator<StreamChunk> {
+    const consumer = new AbortController(), bridge = this.dependencies.bridge
+    const signals = [consumer.signal, options.signal, bridge?.signal, this.dependencies.signal].filter((v): v is AbortSignal => v !== undefined)
+    const watchdog = idleWatchdog(AbortSignal.any(signals), connection.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS, 'CHAT_IDLE')
+    const iterator = this.request(options, connection, watchdog.signal, () => watchdog.pulse())
+    try { while (true) { const next = await watchdog.next(iterator); if (next.done) return; yield next.value } }
+    catch (error) {
+      if (timeoutOf(watchdog.signal, 'CHAT_IDLE')) throw new LlmError('Chat stream idle timeout', 'TIMEOUT', { cause: error })
+      if (options.signal?.aborted || bridge?.signal.aborted || this.dependencies.signal?.aborted) throw new LlmError('Chat request aborted', 'ABORTED', { cause: error })
       if (error instanceof LlmError) throw error
-      if (options.signal?.aborted) throw new LlmError('chat/completions request aborted', 'ABORTED', { cause: error })
-      throw new LlmError('chat/completions transport failed', 'TRANSPORT', { cause: error })
-    }
+      throw new LlmError('Chat transport failed', 'TRANSPORT', { cause: error })
+    } finally { consumer.abort(); watchdog[Symbol.dispose](); await iterator.return(undefined).catch(() => undefined) }
+  }
+  private async *request(options: GenerateOptions, connection: C, signal: AbortSignal, activity: () => void): AsyncGenerator<StreamChunk> {
+    signal.throwIfAborted()
+    const facts: ChatRequestFacts = { sessionId: options.sessionId === undefined ? undefined : String(options.sessionId), purpose: options.purpose, model: options.model, signal }
+    const release = options.purpose === undefined ? await this.dependencies.bridge?.beginOrdinary(options.sessionId, options.model, signal) : undefined
+    try {
+      const hint = await abortable(Promise.resolve(this.dependencies.prepareHint?.(facts)), signal)
+      const body = buildBody(options, connection, hint)
+      const auth = await abortable(this.dependencies.resolveAuth(connection), signal)
+      signal.throwIfAborted()
+      const response = await fetch(chatCompletionsURL(connection.baseURL), { method: 'POST', redirect: 'error', signal,
+        headers: { ...attributionHeaders(), 'content-type': 'application/json', accept: 'text/event-stream', ...auth.headers }, body: JSON.stringify(body) })
+      try {
+        if (!response.ok) {
+          const text = await abortable(response.text(), signal)
+          let raw: unknown; try { raw = JSON.parse(text) } catch { raw = undefined }
+          throw providerError(raw, response.status, response.headers)
+        }
+        if (options.purpose === undefined) this.dependencies.onAccepted?.(facts)
+        yield* translate(sseEvents(response, signal, activity))
+      } finally { await response.body?.cancel().catch(() => undefined) }
+    } finally { release?.() }
   }
 }

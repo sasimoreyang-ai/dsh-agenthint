@@ -87,7 +87,7 @@ describe('ChatCompletionsAdapter', () => {
     ])
     const chunks = await collect(adapterFor(baseURL), BASE_OPTIONS)
     expect(chunks).toContainEqual({ type: 'block-start', index: 0, blockType: 'tool-call' })
-    expect(chunks).toContainEqual({ type: 'tool-call-delta', index: 0, id: 'call_1', argumentsDelta: '{"p":1}' })
+    expect(chunks).toContainEqual({ type: 'tool-call-delta', index: 0, id: 'call_1', name: 'read', argumentsDelta: '{"p":1}' })
     expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'tool-calls' } })
   })
 

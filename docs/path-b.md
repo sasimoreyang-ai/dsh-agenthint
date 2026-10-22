@@ -1,5 +1,7 @@
 # 路径 B：纯插件补充触发源
 
+本文保留v0.4.0触发源调查。当前0.6.0-rc.1的顺序、取消和失败策略以[可靠性合同](reliability.md)为准；不再对全部控制失败开放。
+
 本文描述独立协调器控制能力。v0.4.0 起插件只有这一种模式；端点与模型目录从 `llm-deepseek` 路由继承，见 [endpoint-inheritance.md](endpoint-inheritance.md)。
 
 2026-10-21；目标为 npm 发布的 DSH **0.2.0-rc.1**。官方源码 checkout 已到 rc.2，含既有改动，未修改；参考 fork 也未修改。

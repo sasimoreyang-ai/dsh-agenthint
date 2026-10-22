@@ -28,6 +28,9 @@ export interface InheritedConnection {
   baseURL?: string | undefined
   /** Model catalog of the sibling route, when it declared one. */
   models?: readonly DeepSeekCatalogModel[] | undefined
+  options?: ProtocolOptions | undefined
+  /** Reference only; secret material is resolved per request. */
+  apiKeyEnv?: string | undefined
 }
 
 /** No sibling route contributed anything; the identity value of {@link InheritedConnection}. */
@@ -45,13 +48,13 @@ export interface SessionControlConfig {
   pendingOpAwaitMs: number
   /** Per-attempt control-request timeout in milliseconds. */
   controlTimeoutMs: number
-  /** Transport-level retries after the first failed attempt. */
+  /** Retries of explicit transient HTTP rejections for resume only. */
   retries: number
 }
 
 /** The two `agent_hint` planes: static hint injection and lifecycle control. */
 export interface AgentHintConfig {
-  /** Master switch for `agent_hint` injection; `false` degrades to plain Messages transport. */
+  /** Master switch; false retains the selected transport without hints/controls. */
   enabled: boolean
   /** Static coordinator cache policy copied verbatim into every hint. */
   cacheControl?: AgentHintCacheControl | undefined
@@ -63,29 +66,29 @@ export interface AgentHintConfig {
 export interface Config extends ProtocolConfig {
 
   /**
-   * Credential reference resolved per request. `undefined` (the default) leaves
-   * the route deliberately unauthenticated: requests carry no `authorization` header.
+   * Credential reference resolved per request. When omitted, a same-endpoint
+   * source reference can inherit unless inheritCredentials is false.
    */
   apiKeyEnv: Volatile<string | undefined>
+  inheritCredentials: boolean
   /** Provider route id; read at plugin load (changing it requires a reload). */
   provider: string
-  /**
-   * Wire protocol for the data plane. `chat` speaks OpenAI chat/completions and
-   * keeps `agent_hint` on engines whose Anthropic entrypoint does not declare
-   * the field; `messages` keeps the historical Messages transport.
-   */
-  transport: 'messages' | 'chat'
+  /** Chat is the stock coordinator path; Messages requires backend support. */
+  transport: 'chat' | 'messages'
   /** The two `agent_hint` planes. */
   agentHint?: AgentHintConfig | undefined
 }
 
+// Preserve omission until inheritance is resolved; defaults belong to the final resolver.
+const optionalProtocolFields = Object.fromEntries(Object.entries(deepSeekConfigFields)
+  .map(([key, schema]) => [key, schema.default(undefined as never)])) as typeof deepSeekConfigFields
+
 export const Config = z.object({
-  ...deepSeekConfigFields,
-  baseURL: z.string().default(DEFAULT_BASE_URL).volatile(),
-  models: deepSeekConfigFields.models.default([]),
+  ...optionalProtocolFields,
   apiKeyEnv: z.string().role('credential-ref').volatile(),
+  inheritCredentials: z.boolean().default(true),
   provider: z.string().default(DEFAULT_PROVIDER),
-  transport: z.union(['messages', 'chat']).default('chat'),
+  transport: z.union(['chat', 'messages']).default('chat'),
   agentHint: z.object({
     enabled: z.boolean().default(true),
     // `z.object` implicitly defaults to `{}`, which would cascade a missing
@@ -106,12 +109,14 @@ export const Config = z.object({
 })
 
 /** Plain deployment inputs for the agent-hint route. */
-export type Options = ProtocolOptions & { apiKeyEnv?: string }
+export type Options = ProtocolOptions & { apiKeyEnv?: string; inheritCredentials?: boolean }
 
 /** Endpoint and credential reference captured from the same configuration generation. */
 export interface ResolvedAgentHintOptions extends DeepSeekConnectionOptions {
   /** Credential reference used only for this connection snapshot; absent sends unauthenticated requests. */
   apiKeyEnv: CredentialRef | undefined
+  credentialInherited: boolean
+  authHeader: 'authorization' | 'x-api-key'
 }
 
 /** Read one validated provider configuration.
@@ -136,11 +141,11 @@ export function plainOptions(config: Config): Options {
  * @returns the endpoint every request for this route should use.
  */
 export function resolveBaseURL(
-  configured: string,
+  configured: string | undefined,
   inherited: InheritedConnection = NO_INHERITED_CONNECTION,
   environment?: LaunchEnvironmentSnapshot,
 ): string {
-  if (configured !== DEFAULT_BASE_URL) return configured
+  if (configured !== undefined) return configured
   const fromRoute = inherited.baseURL
   if (fromRoute !== undefined && fromRoute.length > 0) return fromRoute
   const fromEnvironment = environment?.get(BASE_URL_ENV)?.value
@@ -154,12 +159,12 @@ export function resolveBaseURL(
  * @returns the catalog to advertise; empty when neither source declared one.
  */
 export function resolveModels(
-  configured: DeepSeekCatalogModel[],
+  configured: DeepSeekCatalogModel[] | undefined,
   inherited: InheritedConnection = NO_INHERITED_CONNECTION,
 ): DeepSeekCatalogModel[] {
-  if (configured.length > 0) return configured
+  if (configured !== undefined) return [...configured]
   const fromRoute = inherited.models
-  return fromRoute !== undefined && fromRoute.length > 0 ? [...fromRoute] : configured
+  return fromRoute === undefined ? [] : [...fromRoute]
 }
 
 /** Resolve route and protocol settings together.
@@ -173,9 +178,17 @@ export function resolveAdapterOptions(
   environment?: LaunchEnvironmentSnapshot,
   inherited: InheritedConnection = NO_INHERITED_CONNECTION,
 ): ResolvedAgentHintOptions {
-  const apiKeyEnv = config.apiKeyEnv
+  const baseURL = resolveBaseURL(config.baseURL, inherited, environment)
+  const sameEndpoint = inherited.baseURL !== undefined
+    && new URL(baseURL).href.replace(/\/+$/, '') === new URL(inherited.baseURL).href.replace(/\/+$/, '')
+  const credentialInherited = config.apiKeyEnv === undefined && config.inheritCredentials !== false
+    && sameEndpoint && inherited.apiKeyEnv !== undefined
+  const apiKeyEnv = config.apiKeyEnv ?? (credentialInherited ? inherited.apiKeyEnv : undefined)
+  const explicit = Object.fromEntries(Object.entries(config).filter(([, value]) => value !== undefined))
   return {
-    ...resolveProtocolOptions({ ...config, baseURL: resolveBaseURL(config.baseURL ?? DEFAULT_BASE_URL, inherited, environment) }, environment),
+    ...resolveProtocolOptions({ ...inherited.options, ...explicit, baseURL, models: resolveModels(config.models, inherited) }, environment),
     apiKeyEnv: apiKeyEnv === undefined ? undefined : credentialRef(apiKeyEnv),
+    credentialInherited,
+    authHeader: credentialInherited ? 'x-api-key' : 'authorization',
   }
 }

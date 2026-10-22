@@ -1,5 +1,17 @@
 # 实现与验证记录
 
+## 0.6.0-rc.1：v0.5.5审查修复候选（2026-10-22）
+
+从43bac64创建`codex/agenthint-v055-hardening`。本候选尚未发布tag/npm，未在node153部署、执行真实模型/KV或性能实验。以下v0.5.x的153结果是历史记录，不能替代本候选验收。
+
+修复消息角色/工具结果、模型context与输出上限、思考默认值、流内错误/异常EOF/CRLF/DONE、工具分片、错误分类、取消和空闲超时；完整流lease覆盖direct与prepared入口。控制请求不盲目重试mutation，未知结果隔离，卸载取消，resume明确失败可恢复。配置按活动来源实际值逐次解析并热更新，端点/凭据引用固定同代，规范化/v1与实际model。
+
+新增真实官方AgentLoop、Tools、TokenMeter、BasicCompaction与Loader集成：工具两步闭环、自动压力压缩提交后compact、后台标题不记账、配置热更新。模型HTTP和凭据服务使用本地fixture。包/锁版本对齐，移除旧inherit产物，包内文档和当前链接自动检查。
+
+本次Windows/Node24.19.0执行：`npm run check`类型检查、构建及16个文件/152项测试通过；包内exports、文档链接与锁版本检查通过。独立DSH_HOME/profile的CLI tarball安装与`web --dump-config`成功；profile安装仍报告由宿主提供的peer依赖告警，不写成零告警。依赖复用本地固定版本，非全新操作系统验收。最终tarball哈希与完整命令日志保存在桌面交付目录。
+
+不以本地fixture声明真实KV或企业环境性能合格。当前合同见[README](README.md)、[传输](docs/transport.md)、[可靠性](docs/reliability.md)与[审查项闭环](docs/review-resolution.md)。
+
 ## v0.5.x：新增 chat/completions 传输，原厂引擎可用（2026-10-22）
 
 ### 为什么

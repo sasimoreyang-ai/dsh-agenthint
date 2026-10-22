@@ -2,9 +2,9 @@
  * The data-plane half of the `agent_hint` feature: a `prepareExtensions`
  * implementation for the DeepSeek Messages adapter that injects the
  * `agent_hint` field into ordinary requests of the `deepseek-agent-hint`
- * route. Preparation is also the control-plane barrier: a seeded session's
- * deferred `resume` prefetch fires here, and the request waits — bounded and
- * fail-open — for any in-flight manage verb before serialization.
+ * route. The registered adapter holds a full-stream mutation exclusion lease.
+ * Standalone extension callers get a bounded preparation barrier; pending or
+ * unknown mutations block, while resume prefetch remains advisory.
  * `noteOrdinaryRequest` rides the extension `accept` transaction, so only a
  * request the endpoint actually accepted advances the `start` bookkeeping.
  *
@@ -19,6 +19,8 @@ export interface AgentHintExtensionOptions {
     chained: (request: DeepSeekLlmApiExtensionRequest) => Promise<PreparedDeepSeekLlmApiExtensions>;
     /** Lifecycle control plane; omission suppresses the automatic `start` declaration. */
     bridge?: LifecycleBridge | undefined;
+    /** The adapter has already acquired a full-stream lease and performed the barrier. */
+    streamLease?: boolean;
     /** Static coordinator cache policy copied verbatim into every hint. */
     cacheControl?: AgentHintCacheControl | undefined;
 }

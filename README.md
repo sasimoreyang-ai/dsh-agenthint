@@ -1,204 +1,83 @@
 # DSH AgentHint
 
-给 **DSH 0.2.0-rc.1** 增加一条带 `agent_hint` 的 DeepSeek 路由，把会话身份与生命周期信号发给 MindIE-Motor 协调器，用于外部 KV 缓存的卸载与预取。
+为 **DSH 0.2.0-rc.1** 增加 **DeepSeek (agent-hint)** 路由。普通请求携带会话 Hint，生命周期事件向兼容协调器发送控制请求。无需修改 DSH 核心。[English](README.en.md)
 
-**不需要修改引擎，不需要修改 Motor。** 装上即可在原厂镜像上工作。
-
-包名：`@sasimoreyang-ai/dsh-llm-agent-hint` · [English](README.en.md)
-
----
-
-## 为什么需要它
-
-外部 KV 缓存要按会话工作，引擎必须收到 `agent_hint`。但原厂引擎的两个入口对此支持不同：
-
-| 入口 | 原厂是否声明 `agent_hint` | 后果 |
-| --- | --- | --- |
-| `/v1/messages`（Anthropic） | ❌ 未声明，请求模型静默丢弃 | 会话挂不上，`pause`/`resume` 空转 |
-| `/v1/chat/completions`（OpenAI） | ✅ 已声明 | 会话正常挂载，块正常登记 |
-
-DSH 自带的 DeepSeek 适配器走 Messages。本插件默认改用 chat/completions 传输，**在原厂引擎上即可让生命周期控制生效**。
-
-详见 [docs/transport.md](docs/transport.md)。
-
----
+当前代码：**0.6.0-rc.1 发行候选**。本分支修复 v0.5.5 的消息转换、模型容量、流式异常、生命周期和配置继承问题。尚未发布此版本 tag 或 npm 包；当前候选的153实机/KV/性能验收尚未执行。
 
 ## 安装
 
+从本修复分支安装（交付后可用；生产验收应固定到审核通过的 commit）：
+
 ```sh
-dsh plugin --profile <你的 profile> add 'github:sasimoreyang-ai/dsh-agenthint#v0.5.2'
+dsh plugin --profile <你的profile> add 'github:sasimoreyang-ai/dsh-agenthint#codex/agenthint-v055-hardening'
 ```
 
-需要 Node.js `^22.19.0 || >=24`、pnpm 和 DSH **0.2.0-rc.1**。构建产物已提交，安装无需编译。未发布到 npm registry。
+也可以在源码目录 `npm ci && npm run check && npm pack`，再安装生成的 tarball：
 
----
-
-## 装上之后还要做什么
-
-**只需一步：把默认模型指向插件路由。**
-
-插件注册自己的路由 `deepseek-agent-hint`，而 DSH 出厂默认是 `deepseek-official`。不切换的话，会话仍走原路由，hint 不会发出。
-
-### 做法 A：界面里选一次
-
-重启 DSH → 模型选择器 → 选 **DeepSeek (agent-hint)** → 新建会话。
-
-### 做法 B：部署时预置（用户零操作）
-
-```yaml
-- id: agent-default-model
-  config:
-    provider: deepseek-agent-hint
-    model: DeepSeek-V4-Flash
+```sh
+dsh plugin --profile <你的profile> add /绝对路径/sasimoreyang-ai-dsh-llm-agent-hint-0.6.0-rc.1.tgz
 ```
 
-一体机出厂或批量部署推荐做法 B。
+重启相应 DSH 实例，选择 **DeepSeek (agent-hint)** 并新建会话。插件不会自动切换已有会话的 provider。需要 Node `^22.19.0 || >=24`、pnpm 与 DSH **0.2.0-rc.1**。包内已包含构建产物；本包未发布 npm registry。
 
----
+## 什么时候无需重复配置
 
-## 不需要配置地址和模型
+如果已有活动的 **`llm-deepseek`** 源路由，且其后端支持选定协议的 `agent_hint` 与 session-control，插件可复用实际端点、模型目录、生成设置和适用的凭据引用。
 
-插件条目不含任何地址、模型或凭据：
-
-```yaml
-- id: llm-agent-hint
-  config: {}        # 全部继承
-```
-
-端点与模型目录按以下优先级解析：
-
-| 顺序 | 来源 |
+| 设置 | 优先级 |
 | --- | --- |
-| 1 | 插件条目显式配置 |
-| 2 | **继承 `llm-deepseek` 路由**（读它的 `baseURL` 与 `models`） |
-| 3 | 环境变量 `DSH_AGENT_HINT_BASE_URL` |
-| 4 | 内置默认 `http://127.0.0.1:1025` |
+| 地址 | 插件显式值 → 活动源路由 → `DSH_AGENT_HINT_BASE_URL` → localhost:1025 |
+| 模型目录 | 插件显式目录（包括空数组）→ 源实际目录（包括官方默认值）→ 空 |
+| 生成/传输参数 | 插件显式值 → 源实际值 → 官方协议默认值 |
+| 凭据 | 插件显式 `apiKeyEnv` → 同一完整端点的源引用（可关闭） |
 
-第 2 条覆盖绝大多数部署：能用一个模型的人，必然已经配好了端点。详见 [docs/endpoint-inheritance.md](docs/endpoint-inheritance.md)。
+无活动来源且未指定模型时，插件不会猜测模型。`llm-pi-ai` 不在继承范围内。通用 DeepSeek/OpenAI 服务不一定接受 Hint 字段；“原模型可用”不自动证明其支持 KV 控制。详见 [配置继承](docs/endpoint-inheritance.md)。
 
----
+## 协议与内容
 
-## 传输选择
+默认 `transport: chat`，数据与控制均走 `/v1/chat/completions`，兼容已有 `/v1` 根地址。`transport: messages` 保留官方 Messages 适配器，要求后端 Messages 入口声明并转发 Hint。
 
-```yaml
-- id: llm-agent-hint
-  config:
-    transport: chat        # 默认；原厂引擎可用
-    # transport: messages  # 仅当引擎的 Messages 入口已声明 agent_hint
-```
+Chat 保留 system/developer/user/assistant/tool 角色、工具调用ID与结果、reasoning历史，使用完整当前工具声明。原生图片/文件或未知内容块明确报 `UNSUPPORTED_CONTENT`，不再静默丢弃；模型能力声明为文本。真实宿主可能先把附件投影成可读的文本句柄。Messages 的附件能力由官方适配器提供。详见 [传输合同](docs/transport.md)。
 
-| 传输 | 数据面端点 | 适用 |
+## 实际信号
+
+普通请求的 `agent_hint` 包含 `session_id`、已知时的 `parent_session_id`，以及显式设置的 `cache_control`。辅助 `purpose` 请求和匿名请求不带 Hint；插件不添加任务提示词。
+
+| 信号 | 触发条件 | 意图 |
 | --- | --- | --- |
-| `chat` | `/v1/chat/completions` | **原厂引擎（推荐）** |
-| `messages` | `/v1/messages` | 引擎已自行支持该字段时 |
+| start | 新会话首个普通请求，HTTP接受后提交记账 | 登记 |
+| pause | 另一会话普通请求被接受，前一会话空闲且其在途流结束 | 请求卸载 |
+| resume | 有历史/已暂停会话的普通请求前，或符合条件的草稿空白→非空 | 请求预取 |
+| compact | 已使用路由的会话成功完成上下文压缩 | 请求驱逐 |
+| stop | 会话销毁或成功归档 | 请求驱逐 |
 
-两种传输共用同一套 hint 构造、生命周期桥接与控制面。控制请求始终走 `/v1/chat/completions`。
+单纯点击切换页面不保证触发 pause/resume；无浏览器时没有草稿观察。HTTP 2xx 只代表HTTP接受，不能证明实际KV动作完成。
 
----
+## 故障策略
 
-## 发出去的内容
+- resume 是 advisory：默认等待2秒后可继续普通推理。只重试明确的 HTTP 408/429/5xx，默认一次；明确失败后经过1秒冷却可以再次触发。
+- pause/compact/stop 不自动重试。同会话完整模型流持有 lease；已有 mutation 排队/执行超时或结果未知时，新普通请求会收到 `ControlBarrierError`。
+- 卸载取消尚未派发的队列与重试，并取消在途请求信号；不能撤回后端已经收到的操作。
+- 未知 mutation 在当前桥接器内隔离。请核查协调器并使用新会话ID继续工作，不要通过重启推断旧操作已结束。
 
-```json
-{
-  "model": "DeepSeek-V4-Flash",
-  "messages": ["..."],
-  "agent_hint": {
-    "session_id": "当前会话 ID",
-    "parent_session_id": "分叉时的父会话 ID（可选）",
-    "cache_control": { "type": "..." },
-    "session_control": { "type": "start" }
-  }
-}
-```
+隔离状态不持久化，也不提供跨实例 fencing。后端异步完成仍需后端完成确认/版本协议。详见 [可靠性与验收边界](docs/reliability.md)。
 
-- `session_control` 只在特定时机出现：新会话首次普通请求带 `start`
-- `pause` / `resume` / `stop` / `compact` 作为独立 manage 请求发往 `<baseURL>/v1/chat/completions`
-- 压缩、标题生成等辅助请求**不带** hint；无会话身份的请求**不带** hint
-- 插件不添加任何模型可见提示词
-
----
-
-## 生命周期控制
-
-| 动作 | 触发时机 | 引擎侧效果 |
-| --- | --- | --- |
-| `start` | 新会话首次普通请求 | 登记会话 |
-| `pause` | 切走到其他会话 | 卸载（offload） |
-| `resume` | 切回该会话 | 预取（prefetch） |
-| `compact` | 上下文压缩后 | 驱逐（evict） |
-| `stop` | 会话销毁或归档 | 驱逐（evict） |
-
-所有控制动作**失败开放**：超时、网络错误、非 2xx 只记告警，不阻塞对话。
-
----
-
-## 实测收益
-
-在 node_153（Ascend 910B3 × 8 + MindIE-Motor + memcache）实测，**引擎为原厂镜像，未打任何补丁**。
-
-### 端到端 TTFT（100K 长前缀 + HBM 压力）
-
-| 场景 | TTFT |
-| --- | --- |
-| 冷态（完整 prefill） | **25.74 s** |
-| 连接器被动缓存（无 Hint） | **2.35 s** |
-| **加 Hint 主动预取** | **2.10 s** |
-
-| 对比 | 降幅 |
-| --- | --- |
-| **Hint 增量**（主动预取 vs 被动载入） | **10.7%** |
-| 端到端合计（vs 冷态） | **91.9%** |
-
-预取耗时约 1.03 s，被用户输入间隔完整隐藏。
-
-### 原厂引擎上的控制面
-
-```
-offload  status=True  676–678 块
-prefetch status=True  676–678 块
-evict    status=True  676–678 块
-```
-
-零失败、零 no-op。
-
-### ⚠️ 收益的前提
-
-| 条件 | 说明 |
-| --- | --- |
-| **前缀要长** | 100K 下 10.7%；**26K 短会话增量接近 0** |
-| **HBM 要有压力** | 否则一直命中本地，预取无用武之地 |
-| **要有提前量** | 预取约 1.03 s，输入间隔短于此值收益打折 |
-
-**普通日常聊天（几 K token）拿不到 Hint 收益** —— 这是机制决定的，不是配置问题。
-
----
-
-## 可关闭
+## 开关与配置
 
 ```yaml
 - id: llm-agent-hint
   config:
+    transport: chat
+    inheritCredentials: false  # 可选：不复用源凭据
     agentHint:
-      enabled: false
+      sessionControl:
+        enabled: false        # 可选：仅保留静态会话Hint，不自动start
 ```
 
----
+`agentHint.enabled: false` 关闭全部 Hint 与控制，保留普通协议路由。显式部署示例见 `examples/web.patch.yml`。共享服务升级前应核对目标、协调窗口并保留可回退版本。
 
-## 边界
+## 验证状态
 
-- 插件不部署模型、不配置 memcache、不承诺无条件性能收益
-- 引擎必须接受 `agent_hint`；拒绝未知字段的服务会让请求失败
-- 继承的是端点与模型目录，**不继承凭据**；需要鉴权时配置 `apiKeyEnv`
-- 图片、文件、工具声明类内容块在 chat 传输下会被丢弃，不报错
-- 无图形界面部署时客户端草稿观察不生效，其余功能正常
+本候选的回归包含真实 stock Loader、AgentLoop、Tools、TokenMeter 与 BasicCompaction：工具两步闭环、压力自动摘要、compact信号、后台不记账及配置更新。模型HTTP为可控本地fixture，不能代替真实模型/KV验收。当前执行记录见 [STANDARDIZATION.md](STANDARDIZATION.md)。
 
----
-
-## 文档
-
-| 文件 | 内容 |
-| --- | --- |
-| [docs/transport.md](docs/transport.md) | 为什么默认走 chat/completions |
-| [docs/endpoint-inheritance.md](docs/endpoint-inheritance.md) | 端点与模型继承的设计与优先级 |
-| [docs/path-b.md](docs/path-b.md) | 独立协调器控制面的实现说明 |
-| [STANDARDIZATION.md](STANDARDIZATION.md) | 逐版本的实现与验证记录 |
+历史 v0.5.x 仓库记录100K长前缀/HBM压力下被动缓存2.35秒、主动预取2.10秒，约10.7% TTFT增量；每场景n=4。91.9%的相对冷态降幅包含外部缓存整体收益。这些是历史特定负载结果，不能当作本候选或一般日常聊天的收益保证。插件不部署模型、不配置memcache，也不承诺无条件加速。

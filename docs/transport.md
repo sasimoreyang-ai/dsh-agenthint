@@ -1,99 +1,29 @@
-# 传输选择：为什么默认走 chat/completions
+# Chat 与 Messages 传输合同
 
-日期：2026-10-22；宿主基线：npm DSH 0.2.0-rc.1。
+0.6.0-rc.1默认Chat。选用哪条协议应由目标后端的字段转发与控制支持决定，不能只靠搜索一个字段名判断全部链路正确。
 
-## 问题
+## 端点
 
-外部 KV 缓存按会话工作，引擎必须收到 `agent_hint`。但原厂镜像的两个入口对它的支持不同。
+Chat的数据和控制共用URL规范化：根地址补`/v1/chat/completions`，已有`/v1`不重复。Messages使用官方适配器的数据面，控制仍走Chat入口。
 
-### 证据（原厂镜像，未打补丁）
+历史原厂镜像的Messages入口曾丢弃agent_hint，而Chat入口可保存该字段；这是v0.5.x默认切换的依据。它不意味着所有版本镜像都有相同行为，当前候选需在目标镜像上重新验证。
 
-```
-$ docker exec deployer_vllm_mmc grep -c agent_hint \
-    /vllm-workspace/vllm/vllm/entrypoints/anthropic/protocol.py
-0
+## 消息投影
 
-$ docker exec deployer_vllm_mmc grep -c agent_hint \
-    /vllm-workspace/vllm/vllm/entrypoints/openai/chat_completion/protocol.py
-9
-```
+Chat保留system/developer/user/assistant/tool角色；tool结果发送tool_call_id，assistant调用发送相应id/name/arguments。assistant reasoning历史映射为reasoning_content。当前工具完整声明每次发送；历史tool-addition/removal标记按不支持原生工具更新的合同移除，developer文字指令保留。
 
-Anthropic 入口的请求模型没有声明该字段，Pydantic 按默认策略丢弃未知键；OpenAI 入口声明了，字段得以保留。
+Chat声明文本能力。未由宿主转换的原生图片/文件与未知内容明确报UNSUPPORTED_CONTENT；不会静默变成空输入。Messages附件能力依赖官方实现。Chat不执行Messages专用扩展注册表的prepare回调；通用LLM waterfall仍由宿主执行。
 
-### 后果
+## 流
 
-Messages 路径上：
+支持LF/CRLF/CR、跨字节与多行data。DONE结束流并取消剩余body。存在合法finish_reason的完整EOF可结束；缺失finish、非法JSON、未结束事件、流内error均不能报告正常stop。空正常答案报EMPTY_RESPONSE。content_filter报REFUSAL，未知finish reason报MALFORMED_RESPONSE。
 
-- 请求本身成功（HTTP 200），用户无感
-- 但会话挂不上：`register context management … session id None`
-- 于是 `pause` / `resume` 找到会话却找不到块：`has 0 hash/block in SAM`
-- 控制动作全部变成 no-op，日志里只有一条 WARN
+工具id/name/arguments允许分片，直到终止时确认身份与JSON完整后才提供可执行tool-call delta。长度截断不能执行不完整工具。usage区分未缓存输入与缓存读入；无效/矛盾计数拒绝而不造数据。单个SSE行/事件限制4MiB。
 
-这不是插件发错了请求，是**发到了一条引擎不认的通道上**。
+响应读取、Hint和凭据等待服从signal及配置的流空闲超时。消费者退出会取消响应体。在消费者暂停取数据期间不计入provider idle time。
 
-## 两条路
+HTTP鉴权、限流、额度、服务器、超窗与请求错误按宿主代码分类，保留status、request id和Retry-After；providerRetryPolicy供宿主可选重试插件消费。
 
-| 方案 | 代价 | 结论 |
-| --- | --- | --- |
-| 引擎侧补两行（在 Anthropic 请求模型声明该字段，并在转换时拷贝） | 需要改镜像；容器重建即失效 | 可行但不可交付 |
-| **插件侧改用 chat/completions** | 纯插件改动 | **本方案** |
+## 验收边界
 
-## 实现
-
-`src/chat-adapter.ts` 提供 `ChatCompletionsAdapter`：
-
-| 组件 | 职责 |
-| --- | --- |
-| 请求构造 | `GenerateOptions` → chat/completions 请求体（messages / tools / max_tokens / stop / temperature） |
-| SSE 解码 | 按 `\n\n` 切帧，取 `data:` 载荷，跳过 `[DONE]` 与畸形帧 |
-| 分块翻译 | `delta.reasoning` 或 `delta.reasoning_content` → `reasoning-delta`；`delta.content` → `text-delta`；`delta.tool_calls` → `tool-call-delta` |
-| 用量与终止 | `usage` → `TokenUsage`（拆出缓存读入）；`finish_reason` → `FinishReason` |
-| 空响应守卫 | 无文本且无工具调用时抛 `EMPTY_RESPONSE` |
-
-### 与 Messages 传输共用
-
-两种传输只替换「怎么发请求、怎么解析响应」，以下完全共用：
-
-- `buildAgentHint` 的 hint 构造规则（`src/agent-hint.ts`）
-- `LifecycleBridge` 的控制面屏障与 `start` 记账（`src/lifecycle-bridge.ts`）
-- `accept` 事务：只有 HTTP 2xx 之后才推进记账
-
-### 字段名兼容
-
-不同协调器对思维链的字段名不一致：
-
-| 字段名 | 来源 |
-| --- | --- |
-| `reasoning_content` | OpenAI 兼容惯例 |
-| `reasoning` | 本协调器实际使用 |
-
-适配器同时接受两者。这是 v0.5.2 修的问题——只认前者会导致思维链全部丢失。
-
-## 控制面不受影响
-
-控制请求本来就发往 `<baseURL>/v1/chat/completions`，与数据面传输选择无关。切换传输不改变控制面行为。
-
-## 验证
-
-原厂镜像、`transport: chat`：
-
-| 检查 | 结果 |
-| --- | --- |
-| 抓包：普通请求携带 `agent_hint` | ✅ `{"session_id": "...", "session_control": {"type": "start"}}` |
-| 抓包：后台请求不带 `agent_hint` | ✅ |
-| 会话挂载 | ✅ `session id session-…` |
-| 块登记到会话 | ✅ `on_blocks_allocated_for_request, session_id = session-…` |
-| `pause` → offload | ✅ `status=True`，676–678 块 |
-| `resume` → prefetch | ✅ `status=True`，678 块 |
-| `stop` → evict | ✅ `status=True`，678 块 |
-
-## 何时仍用 messages
-
-只有当引擎的 Anthropic 入口已经自行声明并转发 `agent_hint` 时。此时两种传输等价，`messages` 可以省掉一次协议转换。
-
-判断方法：在目标镜像里执行上文的两条 `grep`。Anthropic 侧非 0 即可用 `messages`。
-
-## 未覆盖
-
-- 图片、文件、工具声明类内容块在 chat 传输下被丢弃（协调器无对应字段），不报错
-- 未测 `llm-pi-ai` 的 OpenAI/Anthropic 适配器组合
+本地stock AgentLoop/Tools与压力压缩集成通过不等于真实模型合格。真实文本/工具任务、后端KV动作与消费、异常恢复、输出质量和性能各自需要证据。参见[可靠性合同](reliability.md)与[验证记录](../STANDARDIZATION.md)。

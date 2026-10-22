@@ -22,6 +22,9 @@ export interface InheritedConnection {
     baseURL?: string | undefined;
     /** Model catalog of the sibling route, when it declared one. */
     models?: readonly DeepSeekCatalogModel[] | undefined;
+    options?: ProtocolOptions | undefined;
+    /** Reference only; secret material is resolved per request. */
+    apiKeyEnv?: string | undefined;
 }
 /** No sibling route contributed anything; the identity value of {@link InheritedConnection}. */
 export declare const NO_INHERITED_CONNECTION: InheritedConnection;
@@ -37,12 +40,12 @@ export interface SessionControlConfig {
     pendingOpAwaitMs: number;
     /** Per-attempt control-request timeout in milliseconds. */
     controlTimeoutMs: number;
-    /** Transport-level retries after the first failed attempt. */
+    /** Retries of explicit transient HTTP rejections for resume only. */
     retries: number;
 }
 /** The two `agent_hint` planes: static hint injection and lifecycle control. */
 export interface AgentHintConfig {
-    /** Master switch for `agent_hint` injection; `false` degrades to plain Messages transport. */
+    /** Master switch; false retains the selected transport without hints/controls. */
     enabled: boolean;
     /** Static coordinator cache policy copied verbatim into every hint. */
     cacheControl?: AgentHintCacheControl | undefined;
@@ -52,25 +55,21 @@ export interface AgentHintConfig {
 /** Messages configuration for the agent-hint route, with an optional per-request credential reference. */
 export interface Config extends ProtocolConfig {
     /**
-     * Credential reference resolved per request. `undefined` (the default) leaves
-     * the route deliberately unauthenticated: requests carry no `authorization` header.
+     * Credential reference resolved per request. When omitted, a same-endpoint
+     * source reference can inherit unless inheritCredentials is false.
      */
     apiKeyEnv: Volatile<string | undefined>;
+    inheritCredentials: boolean;
     /** Provider route id; read at plugin load (changing it requires a reload). */
     provider: string;
-    /**
-     * Wire protocol for the data plane. `chat` speaks OpenAI chat/completions and
-     * keeps `agent_hint` on engines whose Anthropic entrypoint does not declare
-     * the field; `messages` keeps the historical Messages transport.
-     */
-    transport: 'messages' | 'chat';
+    /** Chat is the stock coordinator path; Messages requires backend support. */
+    transport: 'chat' | 'messages';
     /** The two `agent_hint` planes. */
     agentHint?: AgentHintConfig | undefined;
 }
 export declare const Config: z<Schemastery.ObjectS<NoInfer<{
-    baseURL: z<string, string, "volatile-defined">;
-    models: z<NoInfer<DeepSeekCatalogModel[]>, NoInfer<DeepSeekCatalogModel[]>, "volatile-defined">;
     apiKeyEnv: z<string, string, "volatile">;
+    inheritCredentials: z<boolean, boolean, "defined">;
     provider: z<string, string, "defined">;
     transport: z<"messages" | "chat", "messages" | "chat", "defined">;
     agentHint: z<Schemastery.ObjectS<NoInfer<{
@@ -118,10 +117,12 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             retries: z<number, number, "defined">;
         }>>, "plain">;
     }>>, "plain">;
+    baseURL: z<string, string, "volatile">;
     thinking: z<"enabled" | "disabled", "enabled" | "disabled", "volatile">;
     reasoningEffort: z<"low" | "off" | "high" | "max", "low" | "off" | "high" | "max", "volatile">;
     maxTokens: z<number, number, "volatile-defined">;
     defaultContextWindow: z<number, number, "volatile-defined">;
+    models: z<NoInfer<DeepSeekCatalogModel[]>, NoInfer<DeepSeekCatalogModel[]>, "volatile-defined">;
     streamIdleTimeoutMs: z<number, number, "volatile-defined">;
     maxRequestFilesBytes: z<number, number, "volatile-defined">;
     maxInlineRequestImageBytes: z<number, number, "volatile-defined">;
@@ -135,9 +136,8 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     fileQuotaCleanupBatch: z<number, number, "volatile-defined">;
     retryPolicy: z<NoInfer<import("@deepseek-ai/dsh-llm").RetryPolicyConfig>, NoInfer<import("@deepseek-ai/dsh-llm").RetryPolicyConfig>, "volatile">;
 }>>, Schemastery.ObjectT<NoInfer<{
-    baseURL: z<string, string, "volatile-defined">;
-    models: z<NoInfer<DeepSeekCatalogModel[]>, NoInfer<DeepSeekCatalogModel[]>, "volatile-defined">;
     apiKeyEnv: z<string, string, "volatile">;
+    inheritCredentials: z<boolean, boolean, "defined">;
     provider: z<string, string, "defined">;
     transport: z<"messages" | "chat", "messages" | "chat", "defined">;
     agentHint: z<Schemastery.ObjectS<NoInfer<{
@@ -185,10 +185,12 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
             retries: z<number, number, "defined">;
         }>>, "plain">;
     }>>, "plain">;
+    baseURL: z<string, string, "volatile">;
     thinking: z<"enabled" | "disabled", "enabled" | "disabled", "volatile">;
     reasoningEffort: z<"low" | "off" | "high" | "max", "low" | "off" | "high" | "max", "volatile">;
     maxTokens: z<number, number, "volatile-defined">;
     defaultContextWindow: z<number, number, "volatile-defined">;
+    models: z<NoInfer<DeepSeekCatalogModel[]>, NoInfer<DeepSeekCatalogModel[]>, "volatile-defined">;
     streamIdleTimeoutMs: z<number, number, "volatile-defined">;
     maxRequestFilesBytes: z<number, number, "volatile-defined">;
     maxInlineRequestImageBytes: z<number, number, "volatile-defined">;
@@ -205,11 +207,14 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
 /** Plain deployment inputs for the agent-hint route. */
 export type Options = ProtocolOptions & {
     apiKeyEnv?: string;
+    inheritCredentials?: boolean;
 };
 /** Endpoint and credential reference captured from the same configuration generation. */
 export interface ResolvedAgentHintOptions extends DeepSeekConnectionOptions {
     /** Credential reference used only for this connection snapshot; absent sends unauthenticated requests. */
     apiKeyEnv: CredentialRef | undefined;
+    credentialInherited: boolean;
+    authHeader: 'authorization' | 'x-api-key';
 }
 /** Read one validated provider configuration.
  * @param config - live plugin configuration.
@@ -228,13 +233,13 @@ export declare function plainOptions(config: Config): Options;
  * @param environment - application launch environment.
  * @returns the endpoint every request for this route should use.
  */
-export declare function resolveBaseURL(configured: string, inherited?: InheritedConnection, environment?: LaunchEnvironmentSnapshot): string;
+export declare function resolveBaseURL(configured: string | undefined, inherited?: InheritedConnection, environment?: LaunchEnvironmentSnapshot): string;
 /** Resolve the model catalog: explicit configuration, then the sibling route's.
  * @param configured - models declared on this plugin's own entry.
  * @param inherited - model catalog read from a sibling route.
  * @returns the catalog to advertise; empty when neither source declared one.
  */
-export declare function resolveModels(configured: DeepSeekCatalogModel[], inherited?: InheritedConnection): DeepSeekCatalogModel[];
+export declare function resolveModels(configured: DeepSeekCatalogModel[] | undefined, inherited?: InheritedConnection): DeepSeekCatalogModel[];
 /** Resolve route and protocol settings together.
  * @param config - raw deployment settings.
  * @param environment - application launch environment.

@@ -55,7 +55,7 @@ describe('SessionControlClient', () => {
     })
     fetchMock.mockImplementationOnce(async () => { generation = 'B'; return jsonResponse(503) })
     fetchMock.mockImplementation(async () => jsonResponse(200))
-    await transport.send('compact', 'session-1')
+    await transport.send('resume', 'session-1')
     await transport.send('resume', 'session-1')
     expect(fetchMock.mock.calls.map(([url, init]) => [url, init.headers.authorization])).toEqual([
       ['http://A.test/control', 'Bearer A'], ['http://A.test/control', 'Bearer A'],
@@ -90,23 +90,23 @@ describe('SessionControlClient', () => {
     })
   })
 
-  it('fails open on a non-2xx response', async () => {
+  it('reports an unknown mutating outcome for HTTP 503', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(503))
-    await expect(client().send('stop', 'session-1')).resolves.toBeUndefined()
-    expect(warnings.map(([message]) => message)[0]).toContain('HTTP 503')
+    await expect(client().send('stop', 'session-1')).resolves.toMatchObject({ status: 'unknown' })
+    expect(warnings.map(([message]) => message)[0]).toContain('unknown')
   })
 
-  it('fails open on a transport error', async () => {
+  it('does not retry an ambiguous transport error', async () => {
     fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'))
-    await expect(client().send('pause', 'session-1')).resolves.toBeUndefined()
-    expect(warnings.map(([message]) => message)[0]).toContain('failed to reach')
-    expect(warnings[0]?.[1]).toBeInstanceOf(Error)
+    await expect(client().send('pause', 'session-1')).resolves.toMatchObject({ status: 'unknown' })
+    expect(warnings.map(([message]) => message)[0]).toContain('unknown')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('retries once after a failed attempt', async () => {
-    fetchMock.mockRejectedValueOnce(new Error('flap'))
+  it('retries resume after an explicit transient rejection', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(503))
     fetchMock.mockResolvedValueOnce(jsonResponse(200))
-    await client({ retries: 1 }).send('compact', 'session-1')
+    await client({ retries: 1 }).send('resume', 'session-1')
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(warnings.length).toBe(1)
   })

@@ -1,7 +1,7 @@
 {
   "name": "@sasimoreyang-ai/dsh-llm-agent-hint",
-  "description": "Add agent_hint to existing DSH DeepSeek Messages models without duplicate configuration; optional standalone coordinator lifecycle control",
-  "version": "0.5.5",
+  "description": "DSH provider with inherited DeepSeek settings, agent_hint and bounded session lifecycle control over Chat or Messages",
+  "version": "0.6.0-rc.1",
   "publishConfig": {
     "access": "public"
   },
@@ -34,8 +34,7 @@
     "NOTICE",
     "README.en.md",
     "examples/*.yml",
-    "docs/path-b.md",
-    "docs/zero-config.md",
+    "docs/*.md",
     "cordis.patch.yml",
     "core-patch/CORE-PATCH.md",
     "STANDARDIZATION.md"
@@ -46,7 +45,7 @@
     "typecheck": "tsc -b --force",
     "clean": "node -e \"require('fs').rmSync('lib',{recursive:true,force:true})\"",
     "test": "vitest run",
-    "check": "npm run typecheck && npm test",
+    "check": "npm run typecheck && npm test && node scripts/check-package.mjs",
     "pretest": "npm run build"
   },
   "peerDependencies": {
@@ -106,6 +105,7 @@
     "@deepseek-ai/cordis-plugin-loader": "~1.0.5",
     "@deepseek-ai/dsh": "0.2.0-rc.1",
     "@deepseek-ai/dsh-agent": "0.2.0-rc.1",
+    "@deepseek-ai/dsh-agent-loop": "0.2.0-rc.1",
     "@deepseek-ai/dsh-anonymous-user-id": "0.2.0-rc.1",
     "@deepseek-ai/dsh-api-gateway": "0.2.0-rc.1",
     "@deepseek-ai/dsh-client-connection": "0.2.0-rc.1",
@@ -114,13 +114,18 @@
     "@deepseek-ai/dsh-client-ui-session": "0.2.0-rc.1",
     "@deepseek-ai/dsh-client-ui-slots": "0.2.0-rc.1",
     "@deepseek-ai/dsh-compaction": "0.2.0-rc.1",
+    "@deepseek-ai/dsh-compaction-basic": "0.2.0-rc.1",
     "@deepseek-ai/dsh-credentials": "0.2.0-rc.1",
     "@deepseek-ai/dsh-deepseek-llm-api-extensions": "0.2.0-rc.1",
     "@deepseek-ai/dsh-launch-environment": "0.2.0-rc.1",
     "@deepseek-ai/dsh-llm": "0.2.0-rc.1",
     "@deepseek-ai/dsh-llm-deepseek": "0.2.0-rc.1",
     "@deepseek-ai/dsh-session": "0.2.0-rc.1",
+    "@deepseek-ai/dsh-session-projection": "0.2.0-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.2.0-rc.1",
     "@deepseek-ai/dsh-timeout": "0.2.0-rc.1",
+    "@deepseek-ai/dsh-token-meter": "0.2.0-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.1",
     "@deepseek-ai/dsh-typert-registry": "0.2.0-rc.1",
     "@deepseek-ai/dsh-workspace": "0.2.0-rc.1",
     "@deepseek-ai/schemastery": "~3.18.4",

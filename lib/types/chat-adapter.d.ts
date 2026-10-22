@@ -1,56 +1,53 @@
-/** OpenAI chat/completions transport for the agent-hint route.
- *
- * The Messages transport loses `agent_hint` on engines whose Anthropic
- * entrypoint does not declare the field: the request model drops unknown keys
- * before the session-aware manager sees them, so lifecycle control silently
- * no-ops. The chat/completions entrypoint declares the field on those same
- * engines, so speaking that protocol keeps the hint intact without touching the
- * engine.
- *
- * @module dsh-llm-agent-hint/chat-adapter
- */
+/** Chat Completions transport with lossless roles, bounded streams and session leases. */
 import { LlmAdapter } from '@deepseek-ai/dsh-llm';
-import type { GenerateOptions, LlmModelInfo, LlmResolvedModelInfo, PreparedAdapterCall, StreamChunk } from '@deepseek-ai/dsh-llm';
+import type { GenerateOptions, LlmModelInfo, LlmResolvedModelInfo, PreparedAdapterCall, StreamChunk, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm';
+import type { DeepSeekConnectionOptions } from '@deepseek-ai/dsh-llm-deepseek';
 import type { AgentHintWire } from './types.ts';
-/** Connection facts the owning plugin resolves per request. */
-export interface ChatAdapterDependencies {
-    /** Resolved endpoint and generation defaults for this generation. */
-    options(): {
-        baseURL: string;
-        maxTokens?: number | undefined;
-    };
-    /** Provider label shown by selectors. */
+import type { LifecycleBridge } from './lifecycle-bridge.ts';
+export interface ChatConnectionOptions {
+    baseURL: string;
+    maxTokens?: number;
+    models?: DeepSeekConnectionOptions['models'];
+    defaultContextWindow?: number;
+    defaults?: DeepSeekConnectionOptions['defaults'];
+    streamIdleTimeoutMs?: number;
+    retryPolicy?: ResolvedRetryPolicy;
+}
+export interface ChatRequestFacts {
+    sessionId: string | undefined;
+    purpose: GenerateOptions['purpose'];
+    model: string;
+    signal: AbortSignal;
+}
+export interface ChatAdapterDependencies<C extends ChatConnectionOptions = ChatConnectionOptions> {
+    options(): C;
     providerName?: string;
-    /** Advisory model catalog for selectors. */
-    discoverModels?(provider: string): readonly LlmModelInfo[] | Promise<readonly LlmModelInfo[]>;
-    /** Auth headers for this generation; empty sends unauthenticated requests. */
-    resolveAuth(): Promise<{
+    /** Authentication must resolve from this exact connection, never current options(). */
+    resolveAuth(connection: C): Promise<{
         headers: Record<string, string>;
     }>;
-    /** Hint to merge into the body, or `undefined` to send none.
-     *
-     * Asynchronous so the caller can arm the control-plane barrier before the
-     * request is serialized; the transport awaits it exactly once per call.
-     */
-    prepareHint?(request: {
-        sessionId: string | undefined;
-        purpose: GenerateOptions['purpose'];
-    }): AgentHintWire | undefined | Promise<AgentHintWire | undefined>;
-    /** Notified once the endpoint accepted the request, mirroring the extension `accept` transaction. */
-    onAccepted?(request: {
-        sessionId: string | undefined;
-    }): void;
+    prepareHint?(request: ChatRequestFacts): AgentHintWire | undefined | Promise<AgentHintWire | undefined>;
+    onAccepted?(request: ChatRequestFacts): void;
+    bridge?: LifecycleBridge;
+    /** Plugin lifetime, including when lifecycle controls are disabled. */
+    signal?: AbortSignal;
+    /** Kept for consumers constructing this adapter directly. */
+    discoverModels?(provider: string): readonly LlmModelInfo[] | Promise<readonly LlmModelInfo[]>;
 }
-/** Adapter speaking the coordinator's OpenAI chat/completions entrypoint. */
-export declare class ChatCompletionsAdapter extends LlmAdapter {
-    #private;
-    constructor(dependencies: ChatAdapterDependencies);
+/** Shared by data and control planes; a /v1 root is never duplicated. */
+export declare function chatCompletionsURL(baseURL: string): string;
+export declare class ChatCompletionsAdapter<C extends ChatConnectionOptions = ChatConnectionOptions> extends LlmAdapter {
+    private readonly dependencies;
+    constructor(dependencies: ChatAdapterDependencies<C>);
     providerInfo(provider: string): {
         id: string;
         name: string;
     };
+    providerRetryPolicy(_provider: string): ResolvedRetryPolicy;
     listModels(provider: string): Promise<readonly LlmModelInfo[]>;
-    resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo>;
-    prepareCall(provider: string, model: string): Promise<PreparedAdapterCall>;
+    resolveModel(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo>;
+    prepareCall(provider: string, model: string, signal?: AbortSignal): Promise<PreparedAdapterCall>;
     stream(options: GenerateOptions): AsyncIterable<StreamChunk>;
+    private generate;
+    private request;
 }

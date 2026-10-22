@@ -1,5 +1,5 @@
 /**
- * Register the `deepseek-agent-hint` route: a DeepSeek Messages transport aimed
+ * Register the `deepseek-agent-hint` route: Chat or DeepSeek Messages aimed
  * at a MindIE-Motor coordinator, whose ordinary requests carry the `agent_hint`
  * field (session identity, optional fork lineage, optional cache policy) and
  * whose session lifecycle events plus the first ordinary request of a seeded
@@ -8,11 +8,11 @@
  * infer endpoint.
  *
  * The endpoint and model catalog fall back to the sibling DeepSeek route, so an
- * operator who already reaches a model configures nothing here. The transport
- * layer is the `llm-deepseek` pipeline with a route-scoped `prepareExtensions`;
- * connection facts resolve per request exactly as in `llm-deepseek`, an omitted
- * `apiKeyEnv` sends requests unauthenticated, and every control-plane failure
- * is fail-open (WARN only).
+ * operator using a compatible backend avoids duplicate configuration. Messages
+ * uses the official pipeline; Chat owns its protocol mapping and model contract;
+ * connection facts resolve per request. Credentials may inherit only for the
+ * same endpoint. Prefetch is advisory; pending or unknown cache mutations
+ * block new ordinary requests in the affected session.
  * @module @deepseek-ai/dsh-llm-agent-hint
  */
 
@@ -20,14 +20,15 @@ import type { Context } from '@deepseek-ai/cordis'
 import { assertUsableApiKey, LlmError, resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
-import { catalogModelInfo, DeepSeekAdapter } from '@deepseek-ai/dsh-llm-deepseek'
+import { catalogModelInfo } from '@deepseek-ai/dsh-llm-deepseek'
 import { getOrCreateAnonymousUserId } from '@deepseek-ai/dsh-anonymous-user-id'
-import { Config, plainOptions, resolveAdapterOptions, resolveModels } from './config.ts'
-import type { InheritedConnection, ResolvedAgentHintOptions } from './config.ts'
-import { readInheritedConnection } from './inherited-connection.ts'
-import { ChatCompletionsAdapter } from './chat-adapter.ts'
+import { Config, plainOptions, resolveAdapterOptions } from './config.ts'
+import type { ResolvedAgentHintOptions } from './config.ts'
+import { AgentHintAdapter } from './adapter.ts'
+import { ChatCompletionsAdapter, chatCompletionsURL } from './chat-adapter.ts'
 import { buildAgentHint } from './agent-hint.ts'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import { readInheritedConnection } from './inherited-connection.ts'
 import { DEFAULT_CONTROL_RETRIES, DEFAULT_CONTROL_TIMEOUT_MS, SessionControlClient } from './control-client.ts'
 import { agentHintPrepareExtensions } from './extension.ts'
 import { DEFAULT_PENDING_OP_AWAIT_MS, LifecycleBridge } from './lifecycle-bridge.ts'
@@ -41,10 +42,10 @@ export { BASE_URL_ENV, Config, DEFAULT_BASE_URL, DEFAULT_PROVIDER, NO_INHERITED_
 export type { AgentHintConfig, InheritedConnection, Options, ResolvedAgentHintOptions, SessionControlConfig } from './config.ts'
 export { INHERIT_SOURCE_ID, readInheritedConnection } from './inherited-connection.ts'
 export { DEFAULT_CONTROL_RETRIES, DEFAULT_CONTROL_TIMEOUT_MS, SessionControlClient } from './control-client.ts'
-export type { ControlWarnSink, SessionControlClientOptions } from './control-client.ts'
+export type { ControlResult, ControlConnection, ControlWarnSink, SessionControlClientOptions } from './control-client.ts'
 export { agentHintPrepareExtensions } from './extension.ts'
 export type { AgentHintExtensionOptions } from './extension.ts'
-export { DEFAULT_PENDING_OP_AWAIT_MS, LifecycleBridge } from './lifecycle-bridge.ts'
+export { ControlBarrierError, DEFAULT_PENDING_OP_AWAIT_MS, LifecycleBridge } from './lifecycle-bridge.ts'
 export type { BridgeWarnSink, LifecycleBridgeOptions } from './lifecycle-bridge.ts'
 export type { AgentHintCacheControl, AgentHintWire, SessionControlVerb } from './types.ts'
 
@@ -52,29 +53,10 @@ export const name = 'llm-agent-hint'
 export const inject = ['llm']
 
 export function apply(ctx: Context, config: Config): void {
-
+  const lifetime = new AbortController()
+  ctx.effect(() => () => lifetime.abort(), 'agent-hint: adapter lifetime')
   const provider = config.provider
-  // Endpoint and catalog fall back to the sibling route an operator already
-  // configured, so a deployment that reaches a model needs no value here. The
-  // read is cached because `options()` runs once per request, and is only
-  // pinned once the editor is mounted: an early read must not freeze an empty
-  // answer for the rest of the process.
-  let inheritedSource: InheritedConnection | undefined
-  const inherited = (): InheritedConnection => {
-    if (inheritedSource !== undefined) return inheritedSource
-    const read = readInheritedConnection(ctx)
-    if (ctx.get('configEditor') !== undefined) inheritedSource = read
-    return read
-  }
-  const options = () => {
-    const base = plainOptions(config)
-    const source = inherited()
-    return resolveAdapterOptions(
-      { ...base, models: resolveModels(base.models ?? [], source) },
-      launchEnvironmentOf(ctx),
-      source,
-    )
-  }
+  const options = () => resolveAdapterOptions(plainOptions(config), launchEnvironmentOf(ctx), readInheritedConnection(ctx))
   options()
   const resolveApiKey = async (connection: ResolvedAgentHintOptions): Promise<string | undefined> => {
     const ref = connection.apiKeyEnv
@@ -87,6 +69,9 @@ export function apply(ctx: Context, config: Config): void {
       const ambient = launchEnvironmentOf(ctx).get(ref)
       if (ambient !== undefined && ambient.value.length > 0) return assertUsableApiKey(ambient.value, 'llm-agent-hint', ref)
     }
+    // An unauthenticated local coordinator may coexist with the stock route's
+    // default, unused DEEPSEEK_API_KEY reference. Explicit plugin refs are strict.
+    if (connection.credentialInherited) return undefined
     throw new LlmError(
       `llm-agent-hint: no API key for provider route "${provider}"; store ${ref} through the credentials`
       + ` service (the web Models page writes it), or export ${ref} in the launching environment`,
@@ -100,13 +85,18 @@ export function apply(ctx: Context, config: Config): void {
   const bridge = controlEnabled
     ? new LifecycleBridge({
       client: new SessionControlClient({
-        endpoint: sessionControl?.endpoint ?? `${options().baseURL.replace(/\/+$/, '')}/v1/chat/completions`,
+        endpoint: sessionControl?.endpoint ?? chatCompletionsURL(options().baseURL),
         resolveApiKey: async () => resolveApiKey(options()),
         resolveConnection: async () => {
           const connection = options()
+          const endpoint = sessionControl?.endpoint ?? chatCompletionsURL(connection.baseURL)
+          if (connection.apiKeyEnv !== undefined && new URL(endpoint).origin !== new URL(connection.baseURL).origin) {
+            throw new Error('llm-agent-hint: refusing to forward model credentials to a different control origin')
+          }
           return {
-            endpoint: sessionControl?.endpoint ?? `${connection.baseURL.replace(/\/+$/, '')}/v1/chat/completions`,
+            endpoint,
             apiKey: await resolveApiKey(connection),
+            authHeader: connection.authHeader,
           }
         },
         model: options().models[0]?.id ?? 'default',
@@ -146,80 +136,79 @@ export function apply(ctx: Context, config: Config): void {
   const chained = (request: Parameters<ReturnType<typeof agentHintPrepareExtensions>>[0]) =>
     ctx.get('deepseekLlmApiExtensions')?.prepare(request)
       ?? Promise.resolve({ fields: {}, accept: () => Promise.resolve() })
-  const discoverModels = (route: string) =>
-    Promise.resolve(options().models.map(model => catalogModelInfo(route, model)))
-  const resolveAuth = async (connection: ResolvedAgentHintOptions) => {
-    const key = await resolveApiKey(connection)
-    const headers: Record<string, string> = {}
-    if (key !== undefined) headers.authorization = `Bearer ${key}`
-    return { headers }
-  }
-
-  // The hint seam is protocol-independent: the Messages transport reaches it
-  // through `prepareExtensions`, the chat transport through `prepareHint`.
-  // Both share the same barrier, state facts and accept transaction.
-  const hintFor = async (
-    sessionId: string | undefined,
-    purpose: 'compaction' | 'session-title' | undefined,
-    model: string,
-  ) => {
-    if (!hintEnabled) return undefined
-    const id = sessionId === undefined ? undefined : SessionId(sessionId)
-    if (bridge !== undefined && purpose === undefined) {
-      bridge.ensureResume(id, model)
-      await bridge.awaitPendingOp(id)
-    }
-    const facts = bridge?.facts(id) ?? { seeded: false, firstOrdinarySent: true, parentSessionId: undefined }
-    return buildAgentHint({
-      sessionId,
-      purpose,
-      parentSessionId: facts.parentSessionId === undefined ? undefined : String(facts.parentSessionId),
-      cacheControl,
-      seeded: facts.seeded,
-      firstOrdinarySent: facts.firstOrdinarySent,
-    })
-  }
-
   // rc.1 registerDeepSeekProvider replaces prepareExtensions after spreading
   // its arguments. The public Adapter API preserves this route's callback.
-  const adapter = config.transport === 'chat'
-    ? new ChatCompletionsAdapter({
-      options,
-      providerName: 'DeepSeek (agent-hint)',
-      discoverModels,
-      resolveAuth: () => resolveAuth(options()),
-      prepareHint: request => hintFor(request.sessionId, request.purpose, options().models[0]?.id ?? request.sessionId ?? 'default'),
-      ...hintEnabled ? {
-        onAccepted: (request: { sessionId: string | undefined }) => {
-          if (bridge === undefined) return
-          const id = request.sessionId === undefined ? undefined : SessionId(request.sessionId)
-          bridge.noteOrdinaryRequest(id, options().models[0]?.id ?? 'default')
-        },
-      } : {},
-    })
-    : new DeepSeekAdapter({
-      options,
-      providerName: 'DeepSeek (agent-hint)',
-      resolveUserId: getOrCreateAnonymousUserId,
-      resolveAttachments: () => ctx.get('attachments'),
-      resolveImageAccess: (attachments, ref) => resolveImageAttachmentAccess(attachments,
-        hostPath => ctx.get('fs')?.processPathFromHostPath(hostPath), ref),
-      resolveAuth,
-      discoverModels,
-      prepareExtensions: hintEnabled
-        ? agentHintPrepareExtensions({
-            chained,
-            ...bridge === undefined ? {} : { bridge },
-            ...cacheControl === undefined ? {} : { cacheControl },
-          })
-        : chained,
-    })
+  const authForConnection = async (connection: ResolvedAgentHintOptions) => {
+    const key = await resolveApiKey(connection)
+    const headers: Record<string, string> = {}
+    if (key !== undefined) headers[connection.authHeader] = connection.authHeader === 'authorization' ? `Bearer ${key}` : key
+    return { headers }
+  }
+  const adapter = config.transport === 'chat' ? new ChatCompletionsAdapter({
+    options,
+    providerName: 'DeepSeek (agent-hint)',
+    resolveAuth: authForConnection,
+    bridge,
+    signal: lifetime.signal,
+    prepareHint: request => {
+      if (!hintEnabled) return undefined
+      const id = request.sessionId === undefined ? undefined : SessionId(request.sessionId)
+      const facts = bridge?.facts(id) ?? { seeded: false, firstOrdinarySent: true, parentSessionId: undefined }
+      return buildAgentHint({ sessionId: request.sessionId, purpose: request.purpose,
+        parentSessionId: facts.parentSessionId, cacheControl,
+        seeded: facts.seeded, firstOrdinarySent: facts.firstOrdinarySent })
+    },
+    onAccepted: request => {
+      if (hintEnabled && request.purpose === undefined) bridge?.noteOrdinaryRequest(
+        request.sessionId === undefined ? undefined : SessionId(request.sessionId), request.model)
+    },
+  }) : new AgentHintAdapter({
+    options,
+    providerName: 'DeepSeek (agent-hint)',
+    resolveUserId: getOrCreateAnonymousUserId,
+    resolveAttachments: () => ctx.get('attachments'),
+    resolveImageAccess: (attachments, ref) => resolveImageAttachmentAccess(attachments,
+      hostPath => ctx.get('fs')?.processPathFromHostPath(hostPath), ref),
+    resolveAuth: authForConnection,
+    discoverModels: route => Promise.resolve(options().models.map(model => catalogModelInfo(route, model))),
+    prepareExtensions: hintEnabled
+      ? agentHintPrepareExtensions({
+          chained,
+          streamLease: true,
+          ...bridge === undefined ? {} : { bridge },
+          ...cacheControl === undefined ? {} : { cacheControl },
+        })
+      : chained,
+  }, bridge, lifetime.signal)
   const registration = ctx.llm.registerAdapter([provider], adapter)
-  let retryPolicy = JSON.stringify(options().retryPolicy)
-  ctx.on('loader/volatile-update', () => {
-    // A sibling route may have just been reconfigured; re-read before deciding.
-    inheritedSource = undefined
-    const current = JSON.stringify(options().retryPolicy)
-    if (current !== retryPolicy) { registration.replace([provider]); retryPolicy = current }
-  })
+  let signature = ''
+  const refresh = () => {
+    const current = options()
+    const next = JSON.stringify(current)
+    if (next === signature) return
+    signature = next
+    registration.replace([provider])
+    ctx.logger.info(`agent-hint: provider=${provider} origin=${new URL(current.baseURL).origin} models=${current.models.length} credential=${current.apiKeyEnv === undefined ? 'none' : current.credentialInherited ? 'inherited-reference' : 'explicit-reference'}`)
+    if (current.models.length === 0) ctx.logger.warn('agent-hint: no selectable models; configure the source llm-deepseek route or explicit plugin models')
+  }
+  // Source changes are scoped to a sibling fiber; topology changes include reload/remove.
+  ctx.on('loader/volatile-update', refresh, { global: true })
+  ctx.on('loader/config-update', refresh, { global: true })
+  ctx.on('loader/entry-init', refresh, { global: true })
+  // Entry creation precedes activation. Refresh after a source reaches/leaves
+  // active state too, including disable, removal and re-addition.
+  let disposed = false
+  let refreshQueued = false
+  ctx.effect(() => () => { disposed = true }, 'agent-hint: catalog refresh')
+  ctx.on('internal/status', fiber => {
+    if (fiber.entry?.options.id !== 'llm-deepseek' || refreshQueued) return
+    refreshQueued = true
+    queueMicrotask(() => {
+      refreshQueued = false
+      if (!disposed) {
+        try { refresh() } catch (error) { ctx.logger.warn('agent-hint: source refresh failed', error) }
+      }
+    })
+  }, { global: true })
+  refresh()
 }
