@@ -69,6 +69,12 @@ export interface Config extends ProtocolConfig {
   apiKeyEnv: Volatile<string | undefined>
   /** Provider route id; read at plugin load (changing it requires a reload). */
   provider: string
+  /**
+   * Wire protocol for the data plane. `chat` speaks OpenAI chat/completions and
+   * keeps `agent_hint` on engines whose Anthropic entrypoint does not declare
+   * the field; `messages` keeps the historical Messages transport.
+   */
+  transport: 'messages' | 'chat'
   /** The two `agent_hint` planes. */
   agentHint?: AgentHintConfig | undefined
 }
@@ -79,6 +85,7 @@ export const Config = z.object({
   models: deepSeekConfigFields.models.default([]),
   apiKeyEnv: z.string().role('credential-ref').volatile(),
   provider: z.string().default(DEFAULT_PROVIDER),
+  transport: z.union(['messages', 'chat']).default('chat'),
   agentHint: z.object({
     enabled: z.boolean().default(true),
     // `z.object` implicitly defaults to `{}`, which would cascade a missing

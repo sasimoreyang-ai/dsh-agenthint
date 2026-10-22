@@ -25,6 +25,9 @@ import { getOrCreateAnonymousUserId } from '@deepseek-ai/dsh-anonymous-user-id'
 import { Config, plainOptions, resolveAdapterOptions, resolveModels } from './config.ts'
 import type { InheritedConnection, ResolvedAgentHintOptions } from './config.ts'
 import { readInheritedConnection } from './inherited-connection.ts'
+import { ChatCompletionsAdapter } from './chat-adapter.ts'
+import { buildAgentHint } from './agent-hint.ts'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import { DEFAULT_CONTROL_RETRIES, DEFAULT_CONTROL_TIMEOUT_MS, SessionControlClient } from './control-client.ts'
 import { agentHintPrepareExtensions } from './extension.ts'
 import { DEFAULT_PENDING_OP_AWAIT_MS, LifecycleBridge } from './lifecycle-bridge.ts'
@@ -143,30 +146,74 @@ export function apply(ctx: Context, config: Config): void {
   const chained = (request: Parameters<ReturnType<typeof agentHintPrepareExtensions>>[0]) =>
     ctx.get('deepseekLlmApiExtensions')?.prepare(request)
       ?? Promise.resolve({ fields: {}, accept: () => Promise.resolve() })
+  const discoverModels = (route: string) =>
+    Promise.resolve(options().models.map(model => catalogModelInfo(route, model)))
+  const resolveAuth = async (connection: ResolvedAgentHintOptions) => {
+    const key = await resolveApiKey(connection)
+    const headers: Record<string, string> = {}
+    if (key !== undefined) headers.authorization = `Bearer ${key}`
+    return { headers }
+  }
+
+  // The hint seam is protocol-independent: the Messages transport reaches it
+  // through `prepareExtensions`, the chat transport through `prepareHint`.
+  // Both share the same barrier, state facts and accept transaction.
+  const hintFor = async (
+    sessionId: string | undefined,
+    purpose: 'compaction' | 'session-title' | undefined,
+    model: string,
+  ) => {
+    if (!hintEnabled) return undefined
+    const id = sessionId === undefined ? undefined : SessionId(sessionId)
+    if (bridge !== undefined && purpose === undefined) {
+      bridge.ensureResume(id, model)
+      await bridge.awaitPendingOp(id)
+    }
+    const facts = bridge?.facts(id) ?? { seeded: false, firstOrdinarySent: true, parentSessionId: undefined }
+    return buildAgentHint({
+      sessionId,
+      purpose,
+      parentSessionId: facts.parentSessionId === undefined ? undefined : String(facts.parentSessionId),
+      cacheControl,
+      seeded: facts.seeded,
+      firstOrdinarySent: facts.firstOrdinarySent,
+    })
+  }
+
   // rc.1 registerDeepSeekProvider replaces prepareExtensions after spreading
   // its arguments. The public Adapter API preserves this route's callback.
-  const adapter = new DeepSeekAdapter({
-    options,
-    providerName: 'DeepSeek (agent-hint)',
-    resolveUserId: getOrCreateAnonymousUserId,
-    resolveAttachments: () => ctx.get('attachments'),
-    resolveImageAccess: (attachments, ref) => resolveImageAttachmentAccess(attachments,
-      hostPath => ctx.get('fs')?.processPathFromHostPath(hostPath), ref),
-    resolveAuth: async (connection) => {
-      const key = await resolveApiKey(connection)
-      const headers: Record<string, string> = {}
-      if (key !== undefined) headers.authorization = `Bearer ${key}`
-      return { headers }
-    },
-    discoverModels: route => Promise.resolve(options().models.map(model => catalogModelInfo(route, model))),
-    prepareExtensions: hintEnabled
-      ? agentHintPrepareExtensions({
-          chained,
-          ...bridge === undefined ? {} : { bridge },
-          ...cacheControl === undefined ? {} : { cacheControl },
-        })
-      : chained,
-  })
+  const adapter = config.transport === 'chat'
+    ? new ChatCompletionsAdapter({
+      options,
+      providerName: 'DeepSeek (agent-hint)',
+      discoverModels,
+      resolveAuth: () => resolveAuth(options()),
+      prepareHint: request => hintFor(request.sessionId, request.purpose, options().models[0]?.id ?? request.sessionId ?? 'default'),
+      ...hintEnabled ? {
+        onAccepted: (request: { sessionId: string | undefined }) => {
+          if (bridge === undefined) return
+          const id = request.sessionId === undefined ? undefined : SessionId(request.sessionId)
+          bridge.noteOrdinaryRequest(id, options().models[0]?.id ?? 'default')
+        },
+      } : {},
+    })
+    : new DeepSeekAdapter({
+      options,
+      providerName: 'DeepSeek (agent-hint)',
+      resolveUserId: getOrCreateAnonymousUserId,
+      resolveAttachments: () => ctx.get('attachments'),
+      resolveImageAccess: (attachments, ref) => resolveImageAttachmentAccess(attachments,
+        hostPath => ctx.get('fs')?.processPathFromHostPath(hostPath), ref),
+      resolveAuth,
+      discoverModels,
+      prepareExtensions: hintEnabled
+        ? agentHintPrepareExtensions({
+            chained,
+            ...bridge === undefined ? {} : { bridge },
+            ...cacheControl === undefined ? {} : { cacheControl },
+          })
+        : chained,
+    })
   const registration = ctx.llm.registerAdapter([provider], adapter)
   let retryPolicy = JSON.stringify(options().retryPolicy)
   ctx.on('loader/volatile-update', () => {

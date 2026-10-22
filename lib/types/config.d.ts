@@ -58,6 +58,12 @@ export interface Config extends ProtocolConfig {
     apiKeyEnv: Volatile<string | undefined>;
     /** Provider route id; read at plugin load (changing it requires a reload). */
     provider: string;
+    /**
+     * Wire protocol for the data plane. `chat` speaks OpenAI chat/completions and
+     * keeps `agent_hint` on engines whose Anthropic entrypoint does not declare
+     * the field; `messages` keeps the historical Messages transport.
+     */
+    transport: 'messages' | 'chat';
     /** The two `agent_hint` planes. */
     agentHint?: AgentHintConfig | undefined;
 }
@@ -66,6 +72,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     models: z<NoInfer<DeepSeekCatalogModel[]>, NoInfer<DeepSeekCatalogModel[]>, "volatile-defined">;
     apiKeyEnv: z<string, string, "volatile">;
     provider: z<string, string, "defined">;
+    transport: z<"messages" | "chat", "messages" | "chat", "defined">;
     agentHint: z<Schemastery.ObjectS<NoInfer<{
         enabled: z<boolean, boolean, "defined">;
         cacheControl: z<Schemastery.ObjectS<NoInfer<{
@@ -132,6 +139,7 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     models: z<NoInfer<DeepSeekCatalogModel[]>, NoInfer<DeepSeekCatalogModel[]>, "volatile-defined">;
     apiKeyEnv: z<string, string, "volatile">;
     provider: z<string, string, "defined">;
+    transport: z<"messages" | "chat", "messages" | "chat", "defined">;
     agentHint: z<Schemastery.ObjectS<NoInfer<{
         enabled: z<boolean, boolean, "defined">;
         cacheControl: z<Schemastery.ObjectS<NoInfer<{

@@ -1,7 +1,7 @@
 {
   "name": "@sasimoreyang-ai/dsh-llm-agent-hint",
   "description": "Add agent_hint to existing DSH DeepSeek Messages models without duplicate configuration; optional standalone coordinator lifecycle control",
-  "version": "0.4.0",
+  "version": "0.5.1",
   "publishConfig": {
     "access": "public"
   },

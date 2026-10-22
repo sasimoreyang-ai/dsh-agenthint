@@ -65,7 +65,7 @@ describe('built plugin on stock rc.1 Loader and services', () => {
     const entries = [
       { id: 'llm', name: '@deepseek-ai/dsh-llm' },
       { id: 'hint', name: pathToFileURL(join(process.cwd(), 'lib/types/index.js')).href,
-        config: { baseURL, apiKeyEnv: 'A', models: [{ id: 'fixture' }], thinking: 'disabled',
+        config: { baseURL, apiKeyEnv: 'A', models: [{ id: 'fixture' }], thinking: 'disabled', transport: 'messages',
           agentHint: { sessionControl: { retries: 0 } } } },
     ]
     await loader.root.update(entries)
