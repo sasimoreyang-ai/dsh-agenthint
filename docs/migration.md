@@ -47,13 +47,17 @@ dsh-agenthint/
 
 ```json
 {
-  "dependencies": { "@sasimoreyang-ai/agenthint-core": "0.6.0-rc.1" },
+  "dependencies": { "@deepseek-ai/schemastery": "~3.18.4" },
   "bundleDependencies": ["@sasimoreyang-ai/agenthint-core"]
 }
 ```
 
-- 依赖用**精确版本**，不用 `workspace:*`
-- `bundleDependencies` 把构建好的 Core 打进插件 tarball，因此单包安装不查 registry
+- Core **只出现在 `bundleDependencies`**，不出现在 `dependencies`
+- 这样 npm 不会去 registry 解析一个尚未发布的版本，而构建好的 Core 会被打进 tarball
+- 交付包内不含 `workspace:*`，也不含开发机绝对路径
+
+> 早先的写法是把 Core 同时写进 `dependencies`（精确版本）+ `bundleDependencies`。
+> 那样 tarball 安装正常，但 `github:` 安装会在依赖解析阶段 404 —— 见 §3 的实测对比。
 
 ---
 
@@ -65,7 +69,14 @@ dsh-agenthint/
 | 配对 tarball 安装 | ✅ 通过 | 36 个包；两者都解析到 `0.6.0-rc.1` |
 | 本地仓库安装 | ✅ 通过 | `import` 成功，bundled Core 就位 |
 | **DSH CLI profile 安装** | ✅ **通过** | `dsh plugin --profile verify-hl add <tarball>`：903 ms 完成，plugin 与 bundled Core 均为 `0.6.0-rc.1`，自动写入 bundles，真机冒烟测试通过 |
-| `github:` Git 安装 | ❌ **阻塞** | `@sasimoreyang-ai/agenthint-core@0.6.0-rc.1` 未发布，registry 返回 404 |
+| **`github:` Git 安装** | ✅ **通过** | 35 个包；bundled Core 就位，`import` 与运行期解析正常 |
+
+**五种安装方式全部通过。** 关键是把 Core 只放进 `bundleDependencies`：
+
+| 写法 | tarball 安装 | `github:` 安装 |
+|---|---|---|
+| Core 在 `dependencies` + `bundleDependencies` | ✅ | ❌ 404（registry 无此版本） |
+| **Core 只在 `bundleDependencies`** | ✅ | ✅ |
 
 CLI 安装的实测输出：
 
@@ -77,6 +88,17 @@ Done in 903ms using pnpm v11.7.0
 plugin: 0.6.0-rc.1
 core  : 0.6.0-rc.1        # 从 bundled 副本解析
 bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless', '@sasimoreyang-ai/dsh-llm-agent-hint']
+```
+
+Git 安装的实测输出：
+
+```text
+$ npm install git+file:///…/dsh-agenthint-hardening
+added 35 packages in 17s
+import: llm-agent-hint
+bundled core: 有，版本 0.6.0-rc.1
+顶层 core: 无（符合 bundled 语义）
+SessionControlClient 构造成功 -> bundled core 已加载
 ```
 
 真机冒烟：headless 任务正常完成；引擎侧只出现 `/v1/chat/completions`，
@@ -174,8 +196,8 @@ const adapter = new DeepSeekAdapter({
 
 | # | 限制 |
 |---|---|
-| 1 | `github:` 安装阻塞于 Core 发布授权 |
-| 2 | 完整断网安装的 Node 依赖闭包未提供（P4） |
+| 1 | Core 尚未发布到 registry。当前靠 `bundleDependencies` 自足，因此五种安装方式都可用；若要让外部项目**直接依赖** Core 包，仍需先发布 |
+| 2 | 完整断网安装的 Node 依赖闭包未提供（P4 范围） |
 | 3 | 未知 mutation 隔离在内存中，重启不能证明旧动作已停止；当前约束为单写者部署 |
 | 4 | 跨租户的后端 KV 分区需要后端与适配层对同一映射达成一致，SDK 内部分区不等于后端分区 |
 | 5 | Platform 集成未接通（见 `docs/integration-baseline.md`） |

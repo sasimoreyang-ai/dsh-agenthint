@@ -48,8 +48,7 @@
     "pretest": "npm run build"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "~3.18.4",
-    "@sasimoreyang-ai/agenthint-core": "0.6.0-rc.1"
+    "@deepseek-ai/schemastery": "~3.18.4"
   },
   "bundleDependencies": [
     "@sasimoreyang-ai/agenthint-core"
