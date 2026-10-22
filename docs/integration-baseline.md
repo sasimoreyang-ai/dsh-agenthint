@@ -146,7 +146,9 @@ DSH → coordinator :1025 → 引擎 → KV / memcache
 
 ## 6. 本轮不改变的事实
 
-- 插件的数据面与管理面**统一走 `/v1/chat/completions`**（与上游实现对齐后的结论），不存在「数据面走 Messages」的旧路径依赖。
+- 插件**默认走 `/v1/chat/completions`**，普通请求与管理请求共用该端点，区别只在 body。
+- 配置项 `transport: 'chat' | 'messages'` **仍然保留**，默认 `chat`；`messages` 是兼容路径，
+  在当前镜像上不生效（引擎 Messages 入口不声明该字段）。实际验证的模式只有 `chat`。
 - 引擎侧不需要任何补丁：原厂镜像的 chat 入口已声明 `agent_hint`。
 - 插件保持零配置：`llm-deepseek` 提供连接，插件条目留空。
 

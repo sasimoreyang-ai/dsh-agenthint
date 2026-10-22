@@ -48,61 +48,78 @@ dsh-agenthint/
 ```json
 {
   "dependencies": { "@deepseek-ai/schemastery": "~3.18.4" },
-  "bundleDependencies": ["@sasimoreyang-ai/agenthint-core"]
+  "devDependencies": { "@sasimoreyang-ai/agenthint-core": "0.6.0-rc.1" }
 }
 ```
 
-- Core **只出现在 `bundleDependencies`**，不出现在 `dependencies`
-- 这样 npm 不会去 registry 解析一个尚未发布的版本，而构建好的 Core 会被打进 tarball
+- Core 是**构建期依赖**，产物在构建时内嵌进 `lib/vendor/agenthint-core`
+- 运行时**没有任何 Core 包引用**，所有 import 在构建时改写为相对路径
 - 交付包内不含 `workspace:*`，也不含开发机绝对路径
 
-> 早先的写法是把 Core 同时写进 `dependencies`（精确版本）+ `bundleDependencies`。
-> 那样 tarball 安装正常，但 `github:` 安装会在依赖解析阶段 404 —— 见 §3 的实测对比。
+> 曾经试过两种写法，都不成立：
+> 1. Core 写进 `dependencies`（精确版本）→ Git 安装 404，registry 无此版本
+> 2. Core 只写进 `bundleDependencies` → `bundleDependencies` 只在 `node_modules`
+>    已有该包时才复制；干净克隆没有 `node_modules`，Core 静默消失，
+>    pnpm 从 Git 安装后 `MODULE_NOT_FOUND`
+>
+> 内嵌是唯一对 npm、pnpm、DSH CLI 都成立的方案。
 
 ---
 
 ## 3. 安装方式（实测结果）
 
-| 方式 | 结果 | 说明 |
-|---|---|---|
-| 单 tarball 安装 | ✅ 通过 | 35 个包；Core 从 bundled 副本解析，运行期正常 |
-| 配对 tarball 安装 | ✅ 通过 | 36 个包；两者都解析到 `0.6.0-rc.1` |
-| 本地仓库安装 | ✅ 通过 | `import` 成功，bundled Core 就位 |
-| **DSH CLI profile 安装** | ✅ **通过** | `dsh plugin --profile verify-hl add <tarball>`：903 ms 完成，plugin 与 bundled Core 均为 `0.6.0-rc.1`，自动写入 bundles，真机冒烟测试通过 |
-| **`github:` Git 安装** | ✅ **通过** | 35 个包；bundled Core 就位，`import` 与运行期解析正常 |
+按**包管理器 × 制品来源**分开列，不合并成一句「全部通过」。
 
-**五种安装方式全部通过。** 关键是把 Core 只放进 `bundleDependencies`：
+| 包管理器 | 来源 | 结果 | 证据 |
+|---|---|---|---|
+| npm 11 | 单 tarball | ✅ | 35 包，`import` 成功 |
+| npm 11 | 配对 tarball | ✅ | 36 包，两者均为 `0.6.0-rc.1` |
+| npm 11 | 本地仓库 | ✅ | `import` 成功，内嵌 Core 就位 |
+| pnpm 11.7.0 | 本地仓库 | ✅ | 内嵌 Core 14 项就位，主入口 import 成功 |
+| pnpm 11.7.0 | `git+file://…` 固定提交 | ✅ | 35 包，主入口 import 成功，`SessionControlClient` 可构造 |
+| DSH CLI（pnpm） | tarball | ✅ | 903 ms，真机冒烟通过 |
+| 干净克隆（无 `node_modules`） | `npm pack` | ✅ | 66 文件，内嵌 Core 15 项含 LICENSE |
 
-| 写法 | tarball 安装 | `github:` 安装 |
-|---|---|---|
-| Core 在 `dependencies` + `bundleDependencies` | ✅ | ❌ 404（registry 无此版本） |
-| **Core 只在 `bundleDependencies`** | ✅ | ✅ |
+**上一轮报告里「五种安装方式全部通过」的说法不成立**：当时只测了 npm 路径，
+把 `git+file://` 的结果当成了 `github:` 的结论，而 DSH 实际用 pnpm。
+内嵌改造后重测，pnpm 路径才真正通过。
 
-CLI 安装的实测输出：
+### 3.1 为什么内嵌是必需的
 
-```text
-$ dsh plugin --profile verify-hl add sasimoreyang-ai-dsh-llm-agent-hint-0.6.0-rc.1.tgz
-Progress: resolved 5, reused 1, downloaded 1, added 1, done
-Done in 903ms using pnpm v11.7.0
+| 写法 | tarball | npm Git | pnpm Git |
+|---|---|---|---|
+| Core 在 `dependencies` | ✅ | ❌ 404 | ❌ 404 |
+| Core 只在 `bundleDependencies` | ✅ | ✅（靠 workspace 链接） | ❌ `MODULE_NOT_FOUND` |
+| **构建期内嵌到 `lib/vendor`** | ✅ | ✅ | ✅ |
 
-plugin: 0.6.0-rc.1
-core  : 0.6.0-rc.1        # 从 bundled 副本解析
-bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless', '@sasimoreyang-ai/dsh-llm-agent-hint']
+`bundleDependencies` 的陷阱：它只在打包时从 `node_modules` 复制。
+工作区里因为有链接所以能复制，干净克隆没有链接，复制出来就是空的——
+而 `npm pack` 不会报错，只有运行时才 `MODULE_NOT_FOUND`。
+
+### 3.2 安装命令
+
+```bash
+# 单包（推荐，Core 已内嵌）
+npm install ./sasimoreyang-ai-dsh-llm-agent-hint-0.6.0-rc.1.tgz
+
+# DSH CLI
+dsh plugin --profile <profile> add <tarball>
+
+# Git（npm 与 pnpm 均可）
+npm  install github:sasimoreyang-ai/dsh-agenthint#<branch-or-tag>
+pnpm add     git+https://github.com/sasimoreyang-ai/dsh-agenthint.git#<sha>
 ```
 
-Git 安装的实测输出：
+**不要宣称公网可安装**——Core 尚未单独发布到 registry。但插件本身不再需要它，
+外部项目若想直接依赖 Core 包，才需要先发布。
 
-```text
-$ npm install git+file:///…/dsh-agenthint-hardening
-added 35 packages in 17s
-import: llm-agent-hint
-bundled core: 有，版本 0.6.0-rc.1
-顶层 core: 无（符合 bundled 语义）
-SessionControlClient 构造成功 -> bundled core 已加载
-```
+### 3.3 离线安装的边界
 
-真机冒烟：headless 任务正常完成；引擎侧只出现 `/v1/chat/completions`，
-`session_control.type=start` 触发一次，会话注册为非 `None`，块分配正常。
+内嵌解决的是 Core 的解析问题。插件的 `peerDependencies` 是全部 `@deepseek-ai/*` 包，
+`dependencies` 还有 `@deepseek-ai/schemastery`。
+
+- 在 DSH profile 内安装时，peer 已由宿主提供，只需解析 `schemastery`
+- **完整断网安装需要预置 Node 依赖闭包**，本轮未提供，属 P4 范围
 
 **Git 安装的阻塞是发布授权问题，不是代码缺陷。** 解除方式：先把 Core 精确版本发布到 registry，再发布插件。
 
@@ -129,12 +146,15 @@ npm install ./sasimoreyang-ai-agenthint-core-0.6.0-rc.1.tgz \
 
 ---
 
-## 4. 迁移中修正的一个真实缺陷
+## 4. 历史背景：一个曾经的真实缺陷
 
-拆分时发现：旧实现的辅助注册函数在展开参数后**覆盖了调用方传入的 `prepareExtensions`**。
+> **这一节是背景说明，不是本轮成果。** 该缺陷在基线 `35e1b00` 中已经修好，
+> 本轮 `src/index.ts` 与 `src/chat-adapter.ts` 相对基线没有改动。
+
+早期实现用辅助注册函数注入 `prepareExtensions`，但发布版构建里那个函数把
+`prepareExtensions` **写死**，不读传入值：
 
 ```js
-// 发布版构建里的实际行为
 const adapter = new DeepSeekAdapter({
   ...dependencies,                       // ← prepareExtensions 从这里进来
   // ...
@@ -152,10 +172,9 @@ const adapter = new DeepSeekAdapter({
 | 运行时 | 不报错 |
 | **实际效果** | **字段从未注入** |
 
-拆分后改为直接使用公开的 `registerAdapter` + 自有 `prepareExtensions`，
-并补了针对真实 HTTP 请求的抓包断言。
+后来改为直接使用公开的 `registerAdapter` + 自有 `prepareExtensions`。
 
-**教训：只有 hooks 不算数据面接入（能力矩阵第 3 项）。**
+**教训（对应能力矩阵第 3 项）：只有 hooks 不算数据面接入。**
 
 ---
 
@@ -164,12 +183,16 @@ const adapter = new DeepSeekAdapter({
 | 证据 | 结果 |
 |---|---|
 | 迁移前测试 | 152 项 |
-| 迁移后测试 | **175 项**（原 152 项一行未改，全部通过；新增 23 项 Core 测试） |
+| 迁移后测试 | **183 项**（原 152 项一行未改，全部通过；新增 31 项 Core 测试） |
 | 类型检查 | `tsc -b --force` 退出 0 |
-| 包完整性检查 | `npm run check` 通过（47 → 63 文件，含 bundled Core） |
+| 包完整性检查 | `npm run check` 通过（66 文件，含内嵌 Core 15 项） |
 | 会话 ID 编码 | 未改 |
 | provider 与配置键 | 未改 |
-| 传输协议 | 未改（统一 `/v1/chat/completions`） |
+| 传输协议 | 未改（默认 `/v1/chat/completions`） |
+
+Core 测试从 23 项增至 31 项，新增的 8 项对应审查发现的缺陷（并发首次请求、
+异常后 lease 泄漏、迟到 acceptance、未知请求类别、非 JSON cache policy、
+transport 抛错结果）。
 
 迁移过程中发现并修正的两处行为差异：
 

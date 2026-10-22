@@ -4,8 +4,8 @@
 
 - 运行命令：`npx vitest run`
 - 环境：Windows 11 / Node 24.19.0 / vitest 4
-- 结果：**17 个测试文件，175 项全部通过**
-- 测试数只作附属信息；下表以**行为**为准
+- 结果：**17 个测试文件，183 项全部通过**
+- 测试数只作附属信息；下表以**行为**为准。审查后修正的条目在「说明」列标注了改动内容
 
 ---
 
@@ -31,7 +31,8 @@
 | 项 | 内容 |
 |---|---|
 | 预期 | 不造身份；非法数据明确拒绝 |
-| 测试 | `core.spec.ts` → "never invents an identity for an anonymous request"、"rejects a cache policy that names no type" |
+| 测试 | `core.spec.ts` → "never invents an identity for an anonymous request"、"rejects a cache policy that names no type"、"rejects cache policy values that JSON would drop or reject"（NaN / Infinity / function / BigInt / Date / undefined）、"rejects a circular cache policy"、"rejects a non-string session identity from a JavaScript caller" |
+| 说明 | 递归 JSON 校验是审查后补的：此前只校验「非数组对象 + 非空 type」，`NaN`、函数、`BigInt`、`Date` 都能通过，到 `JSON.stringify` 时才变形或抛错 |
 | 结论 | **PASS** |
 
 ## C04 普通与标题/摘要交错
@@ -96,14 +97,16 @@
 |---|---|
 | 预期 | 内外身份不串；B 活动不暂停 A |
 | 测试 | `core.spec.ts` → "keeps two coordinators independent so one scope cannot pause another" |
-| 结论 | **PASS**（结构性隔离；后端 KV 分区仍需后端合同，见 §备注） |
+| 结论 | **PASS（仅实例隔离）** |
+| 边界 | 只证明两个协调器实例的内存状态不共享。**可信 scope 的分配、以及两个实例把同一 wire ID 发到同一后端时的 KV 分区，未验证（NOT-RUN）** —— 需要后端提供可测试的身份合同 |
 
 ## C12 同会话重叠首次请求、子 Agent / 分支
 
 | 项 | 内容 |
 |---|---|
 | 预期 | 明确拒绝或隔离，不能重复 start / 错误共享 |
-| 测试 | `core.spec.ts` → "rejects a second overlapping preparation before start is declared"、"does not block background calls behind an unaccepted first request" |
+| 测试 | `core.spec.ts` → "rejects two concurrent first preparations without awaiting the first"、"rejects a second overlapping preparation before start is declared"、"does not block background calls behind an unaccepted first request" |
+| 说明 | 审查指出上一版的保护存在竞态：检查与递增跨了一个 `await`，两个并发请求都能看到 0。现改为**在第一次 await 之前原子预留**，失败时回滚。测试也改为先创建两个 Promise 再一起 await，而不是先 await 第一个 |
 | 结论 | **PASS** |
 
 ## C13 请求已 prepare 但没有启动、流异常退出
@@ -159,6 +162,25 @@
 | 2 | 跨租户后端 KV 分区（C11 的后端部分） | **NOT-RUN**。需要后端提供可测试的分区合同；SDK 内部隔离不等于后端隔离 |
 | 3 | Platform 安装与路由验收 P01–P12 | **BLOCKED**。见 `docs/integration-baseline.md` |
 | 4 | 性能收益验证 | **NOT-RUN**。本轮不做收益声明 |
+| 5 | 第二个真实 Agent 适配 | **NOT-RUN**。Core 单测只证明不依赖 DSH，不等于 Claude 等产品已有足够注入点 |
+
+---
+
+## 审查发现与处理
+
+2026-10-22 独立审查提出 7 项发现（3 项 P1、4 项 P2），全部已修并补回归测试。
+
+| 编号 | 发现 | 处理 | 回归证据 |
+|---|---|---|---|
+| **F01** | `bundleDependencies` 在干净克隆下不复制 Core，pnpm Git 安装 `MODULE_NOT_FOUND` | 改为**构建期内嵌**到 `lib/vendor`，产物无包引用 | 干净克隆打包 66 文件含 Core 15 项；pnpm 11.7.0 `git+file://` 安装后主入口 import 成功 |
+| **F02** | 并发首次请求存在竞态，两个都能拿到 `start` | 在第一次 await **之前**原子预留，失败回滚 | "rejects two concurrent first preparations without awaiting the first" |
+| **F03** | `buildHint` 抛错后 lease 泄漏，整个会话卡死 | 先构造 hint（含校验），再取 lease；失败回滚预留 | "releases the session when hint construction throws" |
+| F04 | 未知 `requestClass` 仍生成 hint；cache policy 未递归校验 | 显式拒绝未知类别；递归校验 JSON 值 | 3 项（未知类别、非 JSON 值、循环引用） |
+| F05 | `finish` 后迟到 `accepted` 仍提交 `start` | lease 增加相位机，终结后不再提交 | "does not commit an acceptance that arrives after finish" |
+| F06 | transport 抛错返回 `failed` 但内部按 `unknown` 隔离 | 统一返回 `unknown` | "reports an unknown outcome when a custom transport throws" |
+| F07 | Core 声明 Apache-2.0 但无 LICENSE 文件，且与根包 MIT 不一致 | 统一为 MIT，补 LICENSE，随内嵌副本一起打包 | `check-package` 断言两处 LICENSE |
+
+**测试数从 175 增至 183**，其中 8 项是针对上述缺陷的回归。
 
 ---
 
@@ -166,7 +188,7 @@
 
 ```bash
 npm ci
-npm run check          # typecheck + 175 tests + 包完整性
+npm run check          # typecheck + 183 tests + 包完整性
 npx vitest run         # 仅测试
 ```
 
