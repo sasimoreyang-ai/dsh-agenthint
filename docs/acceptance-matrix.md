@@ -150,6 +150,7 @@
 | 测试 | `core.spec.ts` → "keeps a quarantined session quarantined after re-registration" |
 | 覆盖范围 | 证明**重新注册不会清除隔离**（这是重启恢复的核心语义） |
 | 未覆盖 | 真实进程重启后的状态恢复流程 |
+| 部署边界 | **单实例、单写者部署下成立**。隔离状态在内存中，进程重启后丢失；多实例共享同一后端时不成立（重启的实例可能把已被隔离的会话重新注册）。可宣称「单实例单写者可靠」，**不可宣称「重启后仍保持隔离」** |
 | 结论 | **PARTIAL** |
 
 ---
@@ -191,6 +192,21 @@ npm ci
 npm run check          # typecheck + 183 tests + 包完整性
 npx vitest run         # 仅测试
 ```
+
+### 安装后必须校验
+
+装完不等于装对。两次实际踩坑：
+
+- pnpm 按「包名 + 版本号」缓存，同名同版本的新制品报 `downloaded 0`，装完还是旧包
+- `rm -rf` 安装目录再 `dsh plugin add`，DSH 会清掉失效的 bundle 引用且不自动加回，插件留在 `dependencies` 却不在 `bundles` 里，唯一症状是 `no adapter registered for provider "deepseek-agent-hint"`
+
+```bash
+node scripts/check-install.mjs --profile <name> --expect-digest <sha256 前 16 位>
+```
+
+九项检查：包存在、包名、**在 `dsh.profile.bundles` 里**、在 `dependencies` 里、自带 `cordis.patch.yml`、patch 插入路由、内容摘要（只哈希文件内容，不含路径）、内嵌 core 完整（若为拆分版）、无悬挂的 core 包引用、无运行时 core 依赖、无 `bundleDependencies`。
+
+退出码 0 才算装对。详见 `../AgentHint-开发档案/10-交付纪律与已知边界.md`。
 
 仓外 Core 验证：
 
