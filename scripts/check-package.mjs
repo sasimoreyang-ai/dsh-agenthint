@@ -31,7 +31,7 @@ const files = new Set(pack.files.map(file => file.path))
 
 for (const path of [
   'lib/types/index.js', 'lib/types/index.d.ts', 'lib/types/chat-adapter.js', 'lib/types/adapter.js',
-  'lib/client.js', 'lib/types/client/index.d.ts', 'cordis.patch.yml',
+  'lib/client.js', 'lib/types/client/index.d.ts', 'cordis.patch.yml', 'scripts/check-install.mjs',
   'docs/transport.md', 'docs/endpoint-inheritance.md', 'docs/reliability.md',
 ]) assert.ok(files.has(path), `Missing packaged asset: ${path}`)
 

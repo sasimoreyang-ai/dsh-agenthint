@@ -19,9 +19,11 @@
  */
 
 import { createHash } from 'node:crypto'
-import { readdir, readFile } from 'node:fs/promises'
+import { readdir, readFile, realpath } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { spawnSync } from 'node:child_process'
 
 const PLUGIN = '@sasimoreyang-ai/dsh-llm-agent-hint'
 
@@ -39,8 +41,41 @@ function parseArgs(argv) {
   return out
 }
 
+export async function checkInstallation(profileDir) {
+  const checks = []
+  const check = (name, ok, detail) => checks.push({ name, ok, detail })
+  try {
+    const profile = JSON.parse(await readFile(join(profileDir, 'package.json'), 'utf8'))
+    check('profile bundle', profile.dsh?.profile?.bundles?.includes(PLUGIN) === true,
+      'The installed package must also be listed in dsh.profile.bundles')
+    const packageDir = await realpath(join(profileDir, 'node_modules', PLUGIN))
+    const pkg = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8'))
+    check('package identity', pkg.name === PLUGIN, `version=${pkg.version}`)
+    // A fresh process resolves peers from the actual installed artifact, not
+    // from this verifier's checkout. This catches the symlink/peer failure.
+    const entry = pathToFileURL(join(packageDir, pkg.main ?? 'lib/types/index.js')).href
+    const probe = spawnSync(process.execPath, ['--input-type=module', '-e',
+      `const m=await import(${JSON.stringify(entry)});if(m.name!=='llm-agent-hint'||typeof m.apply!=='function')throw Error('Invalid server entry')`],
+    { cwd: profileDir, encoding: 'utf8', timeout: 10_000, maxBuffer: 64 * 1024 })
+    check('server entry imports', probe.status === 0 && probe.error === undefined,
+      probe.status === 0 ? 'Server import only; no inference or DSH activation'
+        : String(probe.error?.message ?? probe.stderr).slice(0, 4000))
+    const client = await readFile(join(packageDir, 'lib/client.js'), 'utf8')
+    check('browser bundle present', client.includes('__ModuleLoader__'),
+      'Presence only; live browser activation is a separate integration check')
+    const patch = await readFile(join(packageDir, 'cordis.patch.yml'), 'utf8')
+    check('route patch present', patch.includes('llm-agent-hint'), 'cordis.patch.yml')
+  } catch (error) {
+    check('installed layout readable', false, String(error.message))
+  }
+  return checks
+}
+
+
+async function main() {
 const args = parseArgs(process.argv.slice(2))
-const profile = args['profile']
+const explicitDir = typeof args['profile-dir'] === 'string' ? resolve(args['profile-dir']) : undefined
+const profile = args['profile'] ?? (explicitDir === undefined ? undefined : basename(explicitDir))
 const dshHome = process.env['DSH_HOME']
 
 const results = []
@@ -54,12 +89,12 @@ if (profile === undefined || typeof profile !== 'string') {
   console.error('check-install: --profile <name> is required')
   process.exit(2)
 }
-if (dshHome === undefined) {
+if (dshHome === undefined && explicitDir === undefined) {
   console.error('check-install: DSH_HOME is not set')
   process.exit(2)
 }
 
-const profileDir = join(dshHome, 'profiles', profile)
+const profileDir = explicitDir ?? join(dshHome, 'profiles', profile)
 const packageDir = join(profileDir, 'node_modules', PLUGIN)
 
 console.log(`check-install: profile=${profile}`)
@@ -146,9 +181,11 @@ if (!existsSync(libDir)) {
 
   // A dangling package import means the core was split but never vendored.
   let dangling = false
+  const coreImport = /(?:from|import)\s*\(?\s*['"]@sasimoreyang-ai\/agenthint-core(?:\/[^'"]*)?['"]/
   for (const rel of files) {
     const text = await readFile(join(libDir, rel), 'utf8')
-    if (text.includes(`from '@sasimoreyang-ai/agenthint-core'`)) { dangling = true; break }
+    if (text.split('\n').some(line => coreImport.test(line)
+      && !line.trim().startsWith('*') && !line.trim().startsWith('//'))) { dangling = true; break }
   }
   check('no dangling agenthint-core import', !dangling, dangling ? 'vendoring did not rewrite every import' : undefined)
 }
@@ -162,6 +199,11 @@ check('no bundleDependencies trap',
   pkg.bundleDependencies === undefined,
   pkg.bundleDependencies === undefined ? undefined : JSON.stringify(pkg.bundleDependencies))
 
+// Fresh-process import and browser-file checks complement content identity.
+for (const row of await checkInstallation(profileDir)) {
+  if (['server entry imports', 'browser bundle present'].includes(row.name)) check(row.name, row.ok, row.detail)
+}
+
 // ---- summary ---------------------------------------------------------
 const failed = results.filter(r => !r.ok)
 console.log('')
@@ -172,3 +214,7 @@ if (failed.length === 0) {
 console.log(`check-install: ${failed.length} of ${results.length} checks FAILED`)
 for (const item of failed) console.log(`  FAILED: ${item.name}${item.detail ? ` (${item.detail})` : ''}`)
 process.exit(1)
+
+}
+
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) await main()

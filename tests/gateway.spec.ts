@@ -24,14 +24,22 @@ describe('stock rc.1 Gateway', () => {
     await ctx.plugin(TypertGatewayService)
     const fiber = await ctx.plugin(AgentHintSignals, bridge)
     const gateway = ctx.get('typertGateway')!
-    await gateway.invoke({ namespace: 'agentHintSignals', method: 'composing', args: { request: { sessionId: 'owned-a' } } })
+    await gateway.invoke({ namespace: 'agentHintSignals', method: 'activated', args: { request: { sessionId: 'owned-a' } } })
     await gateway.invoke({ namespace: 'agentHintSignals', method: 'composing', args: { request: { sessionId: 'owned-a' } } })
     expect(calls).toEqual(['resume:owned-a'])
     for (const request of [{ sessionId: 'unrelated' }, { sessionId: 'owned-a', draft: 'private text' }, null]) {
-      await gateway.invoke({ namespace: 'agentHintSignals', method: 'composing', args: { request } })
+      for (const method of ['activated', 'composing']) {
+        await gateway.invoke({ namespace: 'agentHintSignals', method, args: { request } })
+      }
     }
     expect(calls).toEqual(['resume:owned-a'])
+    bridge.onSessionArchived(a)
+    const beforeArchivedActivation = calls.slice()
+    await gateway.invoke({ namespace: 'agentHintSignals', method: 'activated', args: { request: { sessionId: a } } })
+    expect(calls).toEqual(beforeArchivedActivation)
     await fiber.dispose()
-    await expect(gateway.invoke({ namespace: 'agentHintSignals', method: 'composing', args: { request: { sessionId: 'owned-a' } } })).rejects.toThrow()
+    for (const method of ['activated', 'composing']) {
+      await expect(gateway.invoke({ namespace: 'agentHintSignals', method, args: { request: { sessionId: 'owned-a' } } })).rejects.toThrow()
+    }
   })
 })

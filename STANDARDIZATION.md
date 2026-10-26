@@ -1,5 +1,21 @@
 # 实现与验证记录
 
+## 0.6.0-core.2：拆分版恢复触发修复（2026-10-26）
+
+基于 `feat/agenthint-core-sdk` 的 f12b661，移植未拆分版 8cc386a 的输入组件 activation、composing 补充通知、Gateway 去重、安装后实际导入检查及相应测试。Core SDK 仍为0.6.0-rc.1，协调器状态机与HTTP控制传输没有修改；保留 vendor-core、许可证、指纹和打包完整性检查。插件单独使用0.6.0-core.2，避免与未拆分版0.6.0-rc.2的安装缓存混淆。
+
+本地 `npm run check`：18个测试文件、189项测试通过，含SDK测试；类型检查、构建与68文件的打包检查通过。实际 tarball 在没有外部 agenthint-core 包的新私有profile内导入并启动stock DSH，验证使用的是内置vendor文件。该次启动新日志（token脱敏）：
+
+```text
+dsh web: http://127.0.0.1:65092/?token=REDACTED
+```
+
+仅停止这次本地CLI子进程，没有发送模型推理或连接node153。该记录证明本地加载，不证明实机预取/收益或全新机器的所有安装器已验收。
+
+原检查器会将JSDoc中 `from '@sasimoreyang-ai/agenthint-core'` 当成未重写导入，导致可正常导入的产物被误报失败。现忽略注释并检测实际core及core/http导入，回归覆盖“注释允许、真实残留拒绝”。实际打包产物的 `--profile-dir` 与旧 `DSH_HOME + --profile` 两种用法均14项通过；提供错误指纹时按预期退出1。
+
+逐项处置和仍需引擎侧验证的边界见[修复说明](docs/manual-review-20261026.md)。本候选未发布npm/tag、未部署服务器。
+
 ## 0.6.0-rc.1：v0.5.5审查修复候选（2026-10-22）
 
 从43bac64创建`codex/agenthint-v055-hardening`。本候选尚未发布tag/npm，未在node153部署、执行真实模型/KV或性能实验。以下v0.5.x的153结果是历史记录，不能替代本候选验收。

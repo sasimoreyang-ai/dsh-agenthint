@@ -2,12 +2,12 @@
 
 Adds a **DeepSeek (agent-hint)** provider to **DSH 0.2.0-rc.1**, with session hints and lifecycle controls. No DSH core edits. [中文文档](README.md).
 
-Current source: **0.6.0-rc.1 release candidate** on `codex/agenthint-v055-hardening`. No release tag/npm publication or node153 acceptance for this candidate yet.
+Current source: **0.6.0-core.2 release candidate** on `fix/core-session-activation-20261026`. No release tag/npm publication or node153 acceptance for this candidate yet.
 
 ## Install
 
 ```sh
-dsh plugin --profile <your-profile> add 'github:sasimoreyang-ai/dsh-agenthint#codex/agenthint-v055-hardening'
+dsh plugin --profile <your-profile> add 'github:sasimoreyang-ai/dsh-agenthint#fix/core-session-activation-20261026'
 ```
 
 For acceptance, pin an audited commit. Alternatively run `npm ci`, `npm run check`, `npm pack`, then install the resulting absolute tarball path with `dsh plugin --profile <your-profile> add <tarball>`.
@@ -24,7 +24,7 @@ Default `transport: chat` uses `/v1/chat/completions` for both planes and preser
 
 ## Lifecycle and recovery
 
-Start rides the first ordinary request of a fresh session; bookkeeping commits after HTTP acceptance. Pause follows another session's accepted ordinary request once the previous agent is idle and its streams finish. Resume precedes a seeded/paused ordinary request or a qualifying empty-to-nonempty draft transition. Successful compaction emits compact; disposal/archive emits stop. UI navigation alone does not guarantee controls. Background purposes carry no Hint and do not change ordinary-session state.
+Start rides the first ordinary request of a fresh session; bookkeeping commits after HTTP acceptance. Pause follows another session's accepted ordinary request once the previous agent is idle and its streams finish. Resume precedes a seeded/paused ordinary request or is requested when the browser composer mounts/switches sessions; empty-to-nonempty drafts remain a fallback. Successful compaction emits compact; disposal/archive emits stop. Composer activation only resumes eligible known sessions. Navigation alone still does not trigger pause. Background purposes carry no Hint and do not change ordinary-session state.
 
 Resume is advisory and may proceed after its bounded wait. Only explicit transient HTTP resume rejections retry; explicit failure can recover after a one-second cooldown. Mutations never retry automatically. Pending/unknown mutations block new same-session requests with `ControlBarrierError`. Full-stream leases cover direct and prepared dispatch. Unload cancels queued work/retries and active signals, but cannot recall backend requests.
 
@@ -37,3 +37,5 @@ Quarantine is in memory and does not survive reload/restart or coordinate multip
 Local regression uses actual stock Loader, AgentLoop, Tools, TokenMeter and BasicCompaction with fixture model HTTP. It verifies a two-step tool task, pressure compaction and compact signaling, background isolation and configuration changes. See [validation record](STANDARDIZATION.md). It does not establish real KV, model quality or performance.
 
 Historical v0.5.x repository measurements reported about 10.7% incremental TTFT improvement over passive cache loading under 100K-prefix/HBM pressure, n=4 per scenario. The 91.9% cold-baseline reduction includes cache infrastructure benefits. Those results do not certify this candidate or promise everyday-chat gains. The plugin does not deploy models or configure memcache.
+
+See the [fix and verification notes](docs/manual-review-20261026.md).

@@ -1,6 +1,6 @@
 {
   "name": "@sasimoreyang-ai/dsh-llm-agent-hint",
-  "version": "0.6.0-rc.1",
+  "version": "0.6.0-core.2",
   "description": "DSH provider with inherited DeepSeek settings, agent_hint and bounded session lifecycle control over Chat or Messages",
   "type": "module",
   "license": "MIT",
@@ -33,7 +33,8 @@
     "docs/*.md",
     "cordis.patch.yml",
     "core-patch/CORE-PATCH.md",
-    "STANDARDIZATION.md"
+    "STANDARDIZATION.md",
+    "scripts/check-install.mjs"
   ],
   "workspaces": [
     "packages/*"
