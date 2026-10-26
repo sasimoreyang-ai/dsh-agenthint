@@ -2,20 +2,20 @@
 
 为 **DSH 0.2.0-rc.1** 增加 **DeepSeek (agent-hint)** 路由。普通请求携带会话 Hint，生命周期事件向兼容协调器发送控制请求。无需修改 DSH 核心。[English](README.en.md)
 
-当前代码：**0.6.0-rc.1 发行候选**。本分支修复 v0.5.5 的消息转换、模型容量、流式异常、生命周期和配置继承问题。尚未发布此版本 tag 或 npm 包；当前候选的153实机/KV/性能验收尚未执行。
+当前代码：**0.6.0-rc.2 发行候选**。本次基于未拆分 main，修复切回会话/立即粘贴时的恢复触发缺口，并补充安装后实际导入检查。尚未发布此版本 tag 或 npm 包；当前候选的153实机/KV/性能验收尚未执行。
 
 ## 安装
 
 从本修复分支安装（交付后可用；生产验收应固定到审核通过的 commit）：
 
 ```sh
-dsh plugin --profile <你的profile> add 'github:sasimoreyang-ai/dsh-agenthint#codex/agenthint-v055-hardening'
+dsh plugin --profile <你的profile> add 'github:sasimoreyang-ai/dsh-agenthint#fix/session-activation-20261026'
 ```
 
 也可以在源码目录 `npm ci && npm run check && npm pack`，再安装生成的 tarball：
 
 ```sh
-dsh plugin --profile <你的profile> add /绝对路径/sasimoreyang-ai-dsh-llm-agent-hint-0.6.0-rc.1.tgz
+dsh plugin --profile <你的profile> add /绝对路径/sasimoreyang-ai-dsh-llm-agent-hint-0.6.0-rc.2.tgz
 ```
 
 重启相应 DSH 实例，选择 **DeepSeek (agent-hint)** 并新建会话。插件不会自动切换已有会话的 provider。需要 Node `^22.19.0 || >=24`、pnpm 与 DSH **0.2.0-rc.1**。包内已包含构建产物；本包未发布 npm registry。
@@ -47,11 +47,11 @@ Chat 保留 system/developer/user/assistant/tool 角色、工具调用ID与结�
 | --- | --- | --- |
 | start | 新会话首个普通请求，HTTP接受后提交记账 | 登记 |
 | pause | 另一会话普通请求被接受，前一会话空闲且其在途流结束 | 请求卸载 |
-| resume | 有历史/已暂停会话的普通请求前，或符合条件的草稿空白→非空 | 请求预取 |
+| resume | 有历史/已暂停会话的普通请求前，或浏览器会话输入组件激活、草稿空白→非空 | 请求预取 |
 | compact | 已使用路由的会话成功完成上下文压缩 | 请求驱逐 |
 | stop | 会话销毁或成功归档 | 请求驱逐 |
 
-单纯点击切换页面不保证触发 pause/resume；无浏览器时没有草稿观察。HTTP 2xx 只代表HTTP接受，不能证明实际KV动作完成。
+浏览器公共输入组件挂载或切换会话时发送激活信号，桥接器只对已知且符合恢复条件的会话请求 resume；新空会话不会因此发送控制。单纯切页仍不触发 pause，pause 仍以其他会话的普通请求被接受为条件。无浏览器时保留请求前恢复。HTTP 2xx 只代表HTTP接受，不能证明实际KV动作完成。
 
 ## 故障策略
 
@@ -81,3 +81,5 @@ Chat 保留 system/developer/user/assistant/tool 角色、工具调用ID与结�
 本候选的回归包含真实 stock Loader、AgentLoop、Tools、TokenMeter 与 BasicCompaction：工具两步闭环、压力自动摘要、compact信号、后台不记账及配置更新。模型HTTP为可控本地fixture，不能代替真实模型/KV验收。当前执行记录见 [STANDARDIZATION.md](STANDARDIZATION.md)。
 
 历史 v0.5.x 仓库记录100K长前缀/HBM压力下被动缓存2.35秒、主动预取2.10秒，约10.7% TTFT增量；每场景n=4。91.9%的相对冷态降幅包含外部缓存整体收益。这些是历史特定负载结果，不能当作本候选或一般日常聊天的收益保证。插件不部署模型、不配置memcache，也不承诺无条件加速。
+
+本次缺陷逐项结论、安装检查和验证边界见[2026-10-26修复说明](docs/manual-review-20261026.md)。

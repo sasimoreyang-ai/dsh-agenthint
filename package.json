@@ -1,7 +1,7 @@
 {
   "name": "@sasimoreyang-ai/dsh-llm-agent-hint",
   "description": "DSH provider with inherited DeepSeek settings, agent_hint and bounded session lifecycle control over Chat or Messages",
-  "version": "0.6.0-rc.1",
+  "version": "0.6.0-rc.2",
   "publishConfig": {
     "access": "public"
   },
@@ -37,7 +37,8 @@
     "docs/*.md",
     "cordis.patch.yml",
     "core-patch/CORE-PATCH.md",
-    "STANDARDIZATION.md"
+    "STANDARDIZATION.md",
+    "scripts/check-install.mjs"
   ],
   "license": "MIT",
   "scripts": {
@@ -46,7 +47,8 @@
     "clean": "node -e \"require('fs').rmSync('lib',{recursive:true,force:true})\"",
     "test": "vitest run",
     "check": "npm run typecheck && npm test && node scripts/check-package.mjs",
-    "pretest": "npm run build"
+    "pretest": "npm run build",
+    "check:install": "node scripts/check-install.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",

@@ -1,5 +1,21 @@
 # 实现与验证记录
 
+## 0.6.0-rc.2：浏览器恢复触发修复（2026-10-26）
+
+基于未拆分 main（35e1b00），增加输入组件挂载/切换会话的 `activated` Remote，保留 composing 和请求前恢复。只传 sessionId，共用既有恢复幂等与屏障。未修改 Hint 注入、accept 记账、OFF 开关或引擎 TTL 策略。
+
+本地执行 `npm run check`：17 个测试文件、157 个测试通过；类型、构建和 npm 打包内容检查通过。测试包括浏览器 factory 的切换通知、Gateway 两种信号产生一次 resume、持久化草稿/空白编辑、卸载后停止通知与实际安装导入失败检测。
+
+实际 `npm pack` 的 0.6.0-rc.2 tarball 已解包到新私有 profile，在本地 stock DSH 0.2.0-rc.1 CLI 启动。该次新日志仅输出下行，没有 `did not activate` 或 `failed to import`；认证 token 已脱敏：
+
+```text
+dsh web: http://127.0.0.1:50134/?token=REDACTED
+```
+
+profile 不提供 agenthint-core，复用同版本 DSH peers；目标模型端点设为 `127.0.0.1:1`，未发送模型推理。验收后仅停止该次本地子进程。这里证明打包产物的本地加载，不代表全新机器的所有安装器都通过，也不代表 node153 实机、KV/prefetch-ready 或性能非劣验收。
+
+新增随包安装检查：`node scripts/check-install.mjs --profile-dir <profile绝对路径>`。逐项处置、原报告推断的边界见[手动实验修复复核](docs/manual-review-20261026.md)。本候选未发布 npm 或 tag，未部署服务器。
+
 ## 0.6.0-rc.1：v0.5.5审查修复候选（2026-10-22）
 
 从43bac64创建`codex/agenthint-v055-hardening`。本候选尚未发布tag/npm，未在node153部署、执行真实模型/KV或性能实验。以下v0.5.x的153结果是历史记录，不能替代本候选验收。

@@ -13,7 +13,7 @@ assert.ok(npm, 'Run this check through npm run check')
 const pack = JSON.parse(execFileSync(process.execPath, [npm, 'pack', '--dry-run', '--json', '--ignore-scripts'], { encoding: 'utf8' }))[0]
 const files = new Set(pack.files.map(file => file.path))
 for (const path of ['lib/types/index.js', 'lib/types/index.d.ts', 'lib/types/chat-adapter.js', 'lib/types/adapter.js', 'lib/client.js',
-  'lib/types/client/index.d.ts', 'cordis.patch.yml', 'docs/transport.md', 'docs/endpoint-inheritance.md', 'docs/reliability.md']) assert.ok(files.has(path), `Missing packaged asset: ${path}`)
+  'lib/types/client/index.d.ts', 'cordis.patch.yml', 'scripts/check-install.mjs', 'docs/transport.md', 'docs/endpoint-inheritance.md', 'docs/reliability.md']) assert.ok(files.has(path), `Missing packaged asset: ${path}`)
 for (const path of ['README.md', 'README.en.md', 'README.zh.md', 'docs/transport.md', 'docs/endpoint-inheritance.md', 'docs/reliability.md']) {
   const content = await readFile(path, 'utf8')
   for (const match of content.matchAll(/\]\(([^)]+)\)/g)) {
