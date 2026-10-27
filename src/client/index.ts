@@ -26,17 +26,16 @@ export function apply(ctx: Context): void {
   ctx.inject(['remote.agentHintSignals'], (scope) => {
     const lifetime = new AbortController()
     scope.effect(() => () => lifetime.abort(), 'agent-hint: composer RPC lifetime')
-    const send = (method: 'activated' | 'composing', sessionId: string): void => {
+    const send = (method: 'composing', sessionId: string): void => {
       if (lifetime.signal.aborted) return
       void connection.rpc.call('/api', `agentHintSignals/${method}`, { request: { sessionId } },
         AbortSignal.any([lifetime.signal, AbortSignal.timeout(5_000)]))
         .catch(() => undefined) // Advisory only; drafts and ordinary requests remain usable.
     }
     const notify = (sessionId: string): void => send('composing', sessionId)
-    const activate = (sessionId: string): void => send('activated', sessionId)
     scope.slots.inject('conversation.input.overlay', () => scope.slots.register({
       name: 'conversation.input.overlay', id: 'agent-hint-composing', order: 100,
-      inject: () => ({ notify, activate }),
+      inject: () => ({ notify }),
     }, DraftObserver))
   })
 }

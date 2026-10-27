@@ -1,15 +1,17 @@
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
-/** Framework input props and plugin-owned advisory notification callbacks. */
+/** Framework input props and one plugin-owned advisory notification callback. */
 export type DraftObserverProps = Pick<PropsRuntime<'conversation.input.overlay'>, 'sessionId' | 'useInput'> & {
     notify: (sessionId: string) => void;
-    activate: (sessionId: string) => void;
 };
 /**
- * Announce the visible composer on mount and session change, independently of
- * its draft. This also covers a paste batched with navigation or preceding mount.
- * Draft notifications still require an observed empty-to-nonempty transition;
- * persisted drafts and whitespace-only edits are not classified as typing.
+ * Announce draft content once a session's composer goes from empty to non-empty.
+ *
+ * Opening or switching to a session does NOT notify: navigating to an old
+ * conversation must not trigger resume on its own. The first character typed or
+ * the first pasted block both produce the same empty-to-nonempty transition, so
+ * paste is covered without a separate signal. Whitespace-only edits and drafts
+ * that were already non-empty when the session was mounted do not notify.
  * @param props - session identity, public input selector and advisory notifier.
  * @returns no visible UI.
  */
-export declare function DraftObserver({ sessionId, useInput, notify, activate }: DraftObserverProps): null;
+export declare function DraftObserver({ sessionId, useInput, notify }: DraftObserverProps): null;

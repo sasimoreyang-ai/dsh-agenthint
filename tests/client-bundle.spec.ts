@@ -51,23 +51,23 @@ describe('shipped browser factory', () => {
         ...entry.inject!(),
       }
       act(() => { tree = create(React.createElement(component, props)) })
-      expect(calls).toHaveLength(1)
-      expect(calls[0].slice(0, 3)).toEqual(['/api', 'agentHintSignals/activated', { request: { sessionId: 'private-session' } }])
+      // Mounting a session must not announce anything on its own.
+      expect(calls).toHaveLength(0)
       draft = 'private draft text'
       act(() => tree!.update(React.createElement(component, props)))
+      expect(calls).toHaveLength(1)
+      expect(calls[0].slice(0, 3)).toEqual(['/api', 'agentHintSignals/composing', { request: { sessionId: 'private-session' } }])
       draft += ' continues'
       act(() => tree!.update(React.createElement(component, props)))
-      expect(calls).toHaveLength(2)
-      expect(calls[1].slice(0, 3)).toEqual(['/api', 'agentHintSignals/composing', { request: { sessionId: 'private-session' } }])
-      // The shipped client, not just the source component, covers switch+paste.
+      expect(calls).toHaveLength(1)
+      // Switching sessions is silent; only the first edit in the new session notifies.
       act(() => tree!.update(React.createElement(component, { ...props, sessionId: 'revisit-session' })))
-      expect(calls).toHaveLength(3)
-      expect(calls[2].slice(0, 3)).toEqual(['/api', 'agentHintSignals/activated', { request: { sessionId: 'revisit-session' } }])
+      expect(calls).toHaveLength(1)
       expect(JSON.stringify(calls)).not.toContain('private draft text')
       await fiber.dispose()
       expect(ctx.slots.entries('conversation.input.overlay')).toHaveLength(0)
       act(() => tree!.update(React.createElement(component, { ...props, sessionId: 'after-unload' })))
-      expect(calls).toHaveLength(3)
+      expect(calls).toHaveLength(1)
     } finally {
       act(() => tree?.unmount())
       await ctx.fiber.dispose()
