@@ -1,23 +1,23 @@
 # 实现与验证记录
 
-## 0.6.0-rc.5：main 正确性与交付检查（2026-10-29）
+## 0.6.0-rc.6：main 正确性与独立浏览器验收（2026-10-29）
 
-基线 main `eb0e23d`，修复分支 `fix/main-release-correctness-20261029`，目标 DSH **0.2.0-rc.2**。修复锁文件、usage 缺测与矛盾计数、已有草稿首次编辑的通知；更新中英文安装说明，并提交重新构建的 lib。[本次说明](docs/release-correctness-20261029.md)记录精确合同。
+基线 main `eb0e23d`，修复分支 `fix/main-release-correctness-20261029`，目标 DSH **0.2.0-rc.2**。rc.5 修复锁文件和 usage 计量；独立验收进一步发现浏览器的 Remote 等待、raw RPC 封装和异步草稿恢复三处缺陷，均在 rc.6 修复。[本次说明](docs/release-correctness-20261029.md)记录精确合同。
 
 实际执行环境为 Windows、Node v24.19.0、npm 11.17.0：
 
-- `npm ci --no-audit --no-fund --prefer-offline`：全新安装成功（退出码 0）。npm 11 提示六个依赖的生命周期脚本未在其 allowScripts 策略中获准；未修改机器审批策略。其后构建与本次测试均通过，但这不认证本机 PTY/原生工具等无关宿主能力。
-- 在上述干净依赖安装后执行 `npm run check`：类型检查、构建、18 个测试文件共 **181 项测试**、打包文件及根锁文件声明一致性检查全部通过。打包检查输出 49 个文件（加入本记录前后的数量不变）。
-- `npm pack --ignore-scripts`：成功；实际 rc.5 tarball 安装到另一独立 profile 的 node_modules，未借用开发目录的模块链接。
-- 安装检查脚本的 profile bundle、包身份、server entry 新进程导入、浏览器 bundle、route patch 五项全部通过。
-- 直接从安装后包名经真实 DSH rc.2 Loader 加载：provider 可见、三次本地 fixture 回答有效、首次 start、切换 pause、回访请求前 resume、卸载撤销注册均通过。测试只访问本机临时回环 HTTP 端点。
-- 新增 usage 测试覆盖空对象、缺项、null、合法零、最后完整样本保留、缓存/总量/reasoning 一致性与非法计数；组件测试覆盖已存草稿编辑、同长度替换、切页同帧粘贴后的继续编辑，以及无继续编辑时的请求前恢复兜底。实际浏览器 bundle 的 RPC 测试确认只传 sessionId。
+- `npm ci --no-audit --no-fund --prefer-offline` 全新安装后执行 `npm run check`：类型检查、构建、18 个测试文件共 **185 项测试**、49 个打包文件及根锁文件声明一致性检查通过。包括缺测/矛盾 usage、真实 stock Loader/AgentLoop/Tools/TokenMeter/BasicCompaction、DOM 编辑事件、能力探测重连/卸载及真实 Gateway carrier 参数封装回归。npm 提示六个依赖安装脚本未获其 allowScripts 策略批准；未修改机器审批策略，不认证无关 PTY/原生工具能力。
+- `npm pack` 成功。通过 stock DSH CLI/pnpm 将 rc.6 tarball 实际安装到独立 browser profile；安装后的浏览器 bundle SHA256 与候选产物一致。使用内容哈希命名 tarball，避免本地路径复用导致 pnpm 取到旧包。
+- Playwright Chromium 驱动真实 stock DSH rc.2 Web，13 项检查通过：继承模型可选、start、另一会话发送后 pause、导航静默、输入后发送前 resume、连续编辑去重、普通请求不重复 resume、回访静态 ID、异步草稿恢复静默、同长度编辑恢复、归档 stop、RPC 不携带草稿文本、无浏览器 pageerror。
+- 单独重启隔离 profile 验证 `agentHint.enabled: false`：6 项检查通过，普通回答仍可用、全部本地 fixture 请求无 agent_hint、无控制请求、无观察器、无 composing RPC、无 pageerror。每个连接仍允许一次无身份/文本的只读 available 探测。
+- 安装自检指定实际运行的 DSH package.json 后，profile、包身份、stock resolver 下 server entry 导入、浏览器 bundle、route patch 五项均通过。未指定时，原生 Node 缺少 CLI 提供的 peer 会严格失败；这不同于实际 DSH 无法加载。新增回归同时检查显式安装可提供 peer 和真正缺包仍失败。
+- rc.5 独立远端克隆曾通过全新 npm ci、181 项测试与远端 GitHub CI，但真实浏览器随后发现上述缺陷。这些旧成功不替代 rc.6 的验收，也不证明当时的编辑提前恢复已可用。
 
-当前客户端挂载/切页静默，不调用旧 activated。初始非空文本可能是恢复草稿或已经粘贴的文本；没有来源标记时不伪造编辑事件，没有后续编辑则由请求前恢复兜底。本次没有证明所有立即粘贴都有预取提前量。
+当前客户端挂载/切页及异步恢复草稿静默，不调用旧 activated。依赖目标 rc.2 的 composer DOM 标记；缺标记、探测失败或监听器挂载前发生编辑时使用请求前恢复兜底。本次没有证明所有立即粘贴都有预取提前量。
 
-执行日志、独立安装及本地 HTTP 证据保存在执行机的桌面 `REPROT/AgentHint_修复_20261029/`。该路径不是跨机器复现依赖；仓库标准检查及打包内安装检查脚本可重新执行。
+执行日志、独立安装、自动化脚本与本地 HTTP 证据保存在执行机桌面 `REPROT/AgentHint_修复_20261029/` 和 `REPROT/AgentHint_独立验收_20261029/`。该路径不是跨机器复现依赖；仓库标准检查及打包内安装检查脚本可重新执行。
 
-**NOT-RUN：真实浏览器手工操作、node153 部署、真实模型/KV 搬运与消费、TTFT/E2E 性能。** 本轮没有连接或更改服务器；通过本地宿主集成不等于通过实机性能验收。以下保留旧版记录，各自只适用于对应版本。
+**NOT-RUN：node153 部署、真实模型/KV 搬运与消费、TTFT/E2E 性能。** 浏览器验收使用真实宿主与本地确定性 HTTP fixture，未验证真实模型质量；本轮没有连接或更改服务器。通过本地宿主集成不等于通过实机性能验收。以下保留旧版记录，各自只适用于对应版本。
 
 ## 0.6.0-rc.2：浏览器恢复触发修复（2026-10-26，历史）
 

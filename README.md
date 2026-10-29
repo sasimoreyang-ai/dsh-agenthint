@@ -2,7 +2,7 @@
 
 为 **DSH 0.2.0-rc.2** 增加 **DeepSeek (agent-hint)** 路由。普通请求携带会话 Hint，生命周期事件向兼容协调器发送控制请求。无需修改 DSH 核心。[English](README.en.md)
 
-当前代码：**0.6.0-rc.5 发行候选**，基于未拆分 main。修复依赖锁定、缺测 usage 补零及已有草稿编辑的恢复通知，并统一实际触发合同。尚未发布此版本 tag 或 npm 包；本候选的153实机/KV/性能验收尚未执行。
+当前代码：**0.6.0-rc.6 发行候选**，基于未拆分 main。修复依赖锁定、缺测 usage 补零，以及浏览器观察器挂载、RPC 参数封装与异步恢复草稿误触发。已通过真实 stock DSH 浏览器验收（模型 HTTP 为本地 fixture）。尚未发布此版本 tag 或 npm 包；本候选的153实机/KV/性能验收尚未执行。
 
 ## 安装
 
@@ -15,7 +15,7 @@ dsh plugin --profile <你的profile> add 'github:sasimoreyang-ai/dsh-agenthint#f
 也可以在源码目录 `npm ci && npm run check && npm pack`，再安装生成的 tarball：
 
 ```sh
-dsh plugin --profile <你的profile> add /绝对路径/sasimoreyang-ai-dsh-llm-agent-hint-0.6.0-rc.5.tgz
+dsh plugin --profile <你的profile> add /绝对路径/sasimoreyang-ai-dsh-llm-agent-hint-0.6.0-rc.6.tgz
 ```
 
 重启相应 DSH 实例，选择 **DeepSeek (agent-hint)** 并新建会话。插件不会自动切换已有会话的 provider。需要 Node `^22.19.0 || >=24`、pnpm 与 DSH **0.2.0-rc.2**。包内已包含构建产物；本包未发布 npm registry。
@@ -51,9 +51,9 @@ Chat 保留 system/developer/user/assistant/tool 角色、工具调用ID与结�
 | compact | 已使用路由的会话成功完成上下文压缩 | 请求驱逐 |
 | stop | 会话销毁或成功归档 | 请求驱逐 |
 
-浏览器公共输入组件挂载或切换会话时仅记录基线，不发送通知。随后首次观察到非空文本变化时，通过 `composing` 请求恢复；包括已有草稿的继续编辑和同长度替换，持续编辑不重复通知，清空后可以重新通知。桥接器只对已知且符合恢复条件的会话发送 resume。
+浏览器每个连接世代通过一次只读 `available` RPC 检查服务，不依赖不存在的自动生成客户端 Remote 命名空间；探测成功后挂载观察器，断连或卸载时撤销。观察器限定在当前 composer 内，监听 `beforeinput`、`paste` 与 `input`，只通过 `composing` 上传 sessionId。已有草稿的继续编辑和同长度替换可以通知，持续编辑不重复通知，清空后可以重新通知。桥接器只对已知且符合恢复条件的会话发送 resume。
 
-宿主公开状态没有编辑来源标记，因此“切页同帧粘贴”与“恢复旧草稿”无法可靠区分；首次挂载前已有的文本也只作基线。这些情况若没有后续编辑，在发送普通请求时兜底恢复，不保证输入阶段的提前量。旧 `activated` RPC 仅为兼容保留，当前客户端不调用。单纯切页不触发 pause，pause 仍以其他会话的普通请求被接受为条件。HTTP 2xx 只代表HTTP接受，不能证明实际KV动作完成。
+挂载、切页和异步恢复旧草稿本身都不发送 composing。事件定位依赖目标 DSH rc.2 的 composer DOM 标记；标记不存在、探测失败或编辑发生在监听器挂载前时，普通请求前 resume 仍可兜底，不保证输入阶段提前量。旧 `activated` RPC 仅为兼容保留，当前客户端不调用。单纯切页不触发 pause，pause 仍以其他会话的普通请求被接受为条件。HTTP 2xx 只代表HTTP接受，不能证明实际KV动作完成。
 
 Chat 缺失或不完整的 usage 不补零；只发布完整有效的计量样本，并拒绝矛盾计数。没有 usage 时正文可以正常完成，用量保持未知。详见[传输合同](docs/transport.md)。
 

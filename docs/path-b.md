@@ -1,6 +1,6 @@
 # 路径 B：纯插件补充触发源
 
-本文保留v0.4.0触发源调查和 rc.2 激活触发历史。当前0.6.0-rc.5的顺序、草稿通知、取消和失败策略以[可靠性合同](reliability.md)为准；当前客户端不再在挂载/切页时调用 activated。
+本文保留v0.4.0触发源调查和 rc.2 激活触发历史。当前0.6.0-rc.6的顺序、草稿通知、取消和失败策略以[可靠性合同](reliability.md)为准；当前客户端不再在挂载/切页时调用 activated。rc.6 在 stock 连接上探测服务，并以带 args 封装的 RPC 调用；观察器改用当前 composer 内的 DOM 编辑事件，避免异步恢复草稿误触发。
 
 本文描述独立协调器控制能力。v0.4.0 起插件只有这一种模式；端点与模型目录从 `llm-deepseek` 路由继承，见 [endpoint-inheritance.md](endpoint-inheritance.md)。
 
@@ -18,7 +18,7 @@
 
 ## 实际路径
 
-当前路径：公共 Slot → 当前会话观察到非空草稿编辑 → 认证 Connection RPC → agentHintSignals/composing → 已知且符合条件的 provider 会话 → coordinator resume。挂载/切换初始值静默；同帧或挂载前粘贴无后续编辑时依赖普通请求前恢复。rc.2 的 activated 入口仅为旧客户端兼容保留。只发送 session ID，不传文本；不会创建或恢复 DSH Agent。
+当前路径：stock Connection 的 available 探测 → 公共 Slot → composer 内非空编辑事件 → 认证 Connection RPC（args 封装）→ agentHintSignals/composing → 已知且符合条件的 provider 会话 → coordinator resume。挂载/切换/异步恢复草稿静默；监听器挂载前粘贴或目标 DOM 标记缺失时依赖普通请求前恢复。rc.2 的 activated 入口仅为旧客户端兼容保留。只发送 session ID，不传文本；不会创建或恢复 DSH Agent。
 
 公共 archiveSession → 持久化完成 → 新增归档状态 → bridge 去重 → coordinator stop。unarchiveSession 重置周期；官方 session/disposed 保留。对 fork 的原生事件保持兼容，重复来源在 bridge 合并。
 

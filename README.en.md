@@ -2,7 +2,7 @@
 
 Adds a **DeepSeek (agent-hint)** provider to **DSH 0.2.0-rc.2**, with session hints and lifecycle controls. No DSH core edits. [中文文档](README.md).
 
-Current source: **0.6.0-rc.5 release candidate** on `fix/main-release-correctness-20261029`, based on the unsplit main branch. Fixes dependency locking, missing/contradictory usage and restored-draft edit notifications. No release tag/npm publication or node153 acceptance for this candidate yet.
+Current source: **0.6.0-rc.6 release candidate** on `fix/main-release-correctness-20261029`, based on the unsplit main branch. Fixes dependency locking, missing/contradictory usage, browser observer mounting, the RPC payload envelope and asynchronous draft-restoration false signals. Actual stock DSH browser acceptance passed with local fixture model HTTP. No release tag/npm publication or node153 acceptance for this candidate yet.
 
 ## Install
 
@@ -26,7 +26,7 @@ Default `transport: chat` uses `/v1/chat/completions` for both planes and preser
 
 Start rides the first ordinary request of a fresh session; bookkeeping commits after HTTP acceptance. Pause follows another session's accepted ordinary request once the previous agent is idle and its streams finish. Resume precedes a seeded/paused ordinary request or follows the first observed non-empty draft edit in the current session. Edits to restored drafts, including same-length replacements, count; further edits are quiet until the draft is cleared. Successful compaction emits compact; disposal/archive emits stop. Background purposes carry no Hint and do not change ordinary-session state.
 
-Mounting or switching sessions is silent. The public input snapshot cannot distinguish restored text from a paste batched with navigation or preceding mount, so initial content is a baseline. Those cases use request-time resume unless a later edit is observed; early prefetch lead time is not guaranteed. The old `activated` RPC remains for compatibility but is not called by this client. Navigation alone does not trigger pause. No draft text leaves the browser.
+Each connected generation makes one read-only `available` RPC probe through the stock connection, without relying on an automatically generated client Remote namespace. Success mounts an observer scoped to the current composer; disconnect/unload withdraws it. Native `beforeinput`, `paste` and `input` events trigger composing, while mounting, navigation and asynchronous draft restoration stay silent. This depends on the pinned rc.2 composer DOM markers. Missing markers, failed probes and edits preceding listener installation fall back to request-time resume; early prefetch lead time is not guaranteed. Raw RPC uses the stock `{args: ...}` envelope. The old `activated` RPC remains for compatibility but is not called by this client. Navigation alone does not trigger pause. No draft text leaves the browser.
 
 Missing/incomplete Chat usage stays unknown rather than becoming a zero-token sample. Only complete valid samples are published, and contradictory counters fail explicitly. A valid answer can finish without usage. See [transport](docs/transport.md).
 

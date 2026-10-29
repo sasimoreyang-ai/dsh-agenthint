@@ -12,6 +12,8 @@ declare module '@deepseek-ai/cordis' {
 export declare class AgentHintSignals extends TypertRemoteService {
     private readonly bridge;
     constructor(ctx: Context, bridge: LifecycleBridge);
+    /** Read-only capability probe; this service exists only while plugin controls are enabled. */
+    available(): boolean;
     /**
      * The visible composer was mounted or switched to this session. Advisory only;
      * the existing bridge ignores unknown/archived sessions and deduplicates resume.

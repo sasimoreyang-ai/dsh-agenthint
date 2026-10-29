@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtemp, mkdir, writeFile, rm, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
+import { createRequire } from 'node:module'
 // The same read-only script is shipped in the package for operators.
 // @ts-expect-error The operator script intentionally has no build-time types.
 import { checkInstallation } from '../scripts/check-install.mjs'
@@ -39,5 +40,13 @@ describe('installed server entry verification', () => {
     const entry = "export const name='llm-agent-hint'; export function apply(){}"
     expect((await checkInstallation(await fixture(entry))).every((r: any) => r.ok)).toBe(true)
     expect((await checkInstallation(await fixture(entry, false))).find((r: any) => r.name === 'profile bundle')).toMatchObject({ ok: false })
+  })
+  it('uses only an explicitly selected stock installation for runtime-supplied peers', async () => {
+    const dir = await fixture("import '@deepseek-ai/dsh-llm'; export const name='llm-agent-hint'; export function apply(){}")
+    expect((await checkInstallation(dir)).find((r: any) => r.name === 'server entry imports')).toMatchObject({ ok: false })
+    const installAnchor = createRequire(import.meta.url).resolve('@deepseek-ai/dsh/package.json')
+    expect((await checkInstallation(dir, { installAnchor })).every((r: any) => r.ok)).toBe(true)
+    const broken = await fixture("import 'missing-agenthint-peer-fixture'; export const name='llm-agent-hint'; export function apply(){}")
+    expect((await checkInstallation(broken, { installAnchor })).find((r: any) => r.name === 'server entry imports')).toMatchObject({ ok: false })
   })
 })

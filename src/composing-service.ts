@@ -17,6 +17,12 @@ export class AgentHintSignals extends TypertRemoteService {
     super(ctx, 'agentHintSignals')
   }
 
+  /** Read-only capability probe; this service exists only while plugin controls are enabled. */
+  @Remote
+  available(): boolean {
+    return true
+  }
+
   /**
    * The visible composer was mounted or switched to this session. Advisory only;
    * the existing bridge ignores unknown/archived sessions and deduplicates resume.

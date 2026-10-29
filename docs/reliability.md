@@ -10,9 +10,9 @@ SessionControlClient返回accepted、failed、unknown或cancelled（附是否派
 
 ## 会话顺序
 
-浏览器输入组件挂载或切换会话时只记录草稿基线，不发 RPC。当前会话首次观察到非空草稿变化时，经认证 RPC 发送 `composing`（仅 sessionId）；已有草稿的后续编辑、同长度替换也可以通知，后续连续编辑静默，清空后重新允许通知。复用既有 ensureResume 幂等逻辑，只处理已知且符合恢复条件的会话，不创建/启动 Agent。卸载会取消后续 RPC。
+浏览器每个连接世代发一次只读 `agentHintSignals/available` 探测（`{args:{}}`），成功后挂载观察器，断连/卸载撤销。真实第三方 Host Remote 不自动产生客户端 `remote.agentHintSignals` 服务。观察器在当前 composer 内监听 `beforeinput`、`paste`、`input`，经认证 RPC 发送 `composing`（`{args:{request:{sessionId}}}`）；已有草稿的后续编辑、同长度替换也可以通知，连续编辑静默，清空后重新允许通知。复用既有 ensureResume 幂等逻辑，只处理已知且符合恢复条件的会话，不创建/启动 Agent。
 
-公开输入状态没有编辑来源，不能区分初始非空草稿是恢复值还是切页同帧/挂载前的粘贴；初始值不通知，没有后续编辑时由普通请求前 resume 兜底。不能承诺这类粘贴在发送前已有预取提前量。`activated` 服务端方法仅为旧客户端兼容保留，当前客户端不调用。公开草稿变化也可能来自程序写入，不作为可信用户行为或权限依据。
+草稿快照仅用于清空后重新允许通知，不作为编辑证据，因此挂载、切页及异步恢复草稿均静默。DOM 事件定位依赖目标 DSH rc.2 的 `[data-slot="conversation.composer.bar"]`、`[data-composer-input="true"]` 与 contenteditable 标记；缺标记、能力探测失败或监听器挂载前发生编辑时，由普通请求前 resume 兜底，不承诺发送前提前量。`activated` 服务端方法仅为旧客户端兼容保留，当前客户端不调用。输入事件不作为可信用户行为或权限依据。
 
 普通请求在真正进入适配器前取得lease，覆盖prepareCall与stream两种入口，直到模型流完成、错误、取消或迭代器退出才释放。变更操作等待该会话已开始的流；新普通请求等待最新控制队列尾。
 
