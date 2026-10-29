@@ -63,11 +63,17 @@ describe('shipped browser factory', () => {
       // Switching sessions is silent; only the first edit in the new session notifies.
       act(() => tree!.update(React.createElement(component, { ...props, sessionId: 'revisit-session' })))
       expect(calls).toHaveLength(1)
+      // A restored/non-empty baseline can be edited without clearing first.
+      draft = draft.replace('private', 'changed')
+      act(() => tree!.update(React.createElement(component, { ...props, sessionId: 'revisit-session' })))
+      expect(calls).toHaveLength(2)
+      expect(calls[1].slice(0, 3)).toEqual(['/api', 'agentHintSignals/composing', { request: { sessionId: 'revisit-session' } }])
       expect(JSON.stringify(calls)).not.toContain('private draft text')
+      expect(JSON.stringify(calls)).not.toContain('changed draft text')
       await fiber.dispose()
       expect(ctx.slots.entries('conversation.input.overlay')).toHaveLength(0)
       act(() => tree!.update(React.createElement(component, { ...props, sessionId: 'after-unload' })))
-      expect(calls).toHaveLength(1)
+      expect(calls).toHaveLength(2)
     } finally {
       act(() => tree?.unmount())
       await ctx.fiber.dispose()

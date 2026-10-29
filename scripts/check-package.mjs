@@ -7,6 +7,9 @@ const pkg = JSON.parse(await readFile('package.json', 'utf8'))
 const lock = JSON.parse(await readFile('package-lock.json', 'utf8'))
 assert.equal(lock.version, pkg.version, 'lockfile version mismatch')
 assert.equal(lock.packages[''].version, pkg.version, 'lockfile package version mismatch')
+for (const section of ['dependencies', 'devDependencies', 'peerDependencies', 'peerDependenciesMeta', 'engines']) {
+  assert.deepEqual(lock.packages[''][section], pkg[section], `lockfile ${section} mismatch`)
+}
 for (const path of ['lib/types/inherit.js', 'lib/types/inherit.d.ts']) await assert.rejects(access(path), { code: 'ENOENT' })
 const npm = process.env.npm_execpath
 assert.ok(npm, 'Run this check through npm run check')

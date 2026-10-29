@@ -10,24 +10,28 @@ export type DraftObserverProps = Pick<PropsRuntime<'conversation.input.overlay'>
 }
 
 /**
- * Announce draft content once a session's composer goes from empty to non-empty.
+ * Announce the first observed non-empty draft edit in the current session.
  *
  * Opening or switching to a session does NOT notify: navigating to an old
- * conversation must not trigger resume on its own. The first character typed or
- * the first pasted block both produce the same empty-to-nonempty transition, so
- * paste is covered without a separate signal. Whitespace-only edits and drafts
- * that were already non-empty when the session was mounted do not notify.
+ * conversation must not trigger resume on its own. Editing a restored draft also
+ * notifies, including replacements that keep the same length. Further edits are
+ * quiet until the draft is cleared. Initial content is only a baseline: the host
+ * does not distinguish restored text from a paste batched with navigation/mount.
+ * That case uses request-time resume unless a subsequent edit is observed.
  * @param props - session identity, public input selector and advisory notifier.
  * @returns no visible UI.
  */
 export function DraftObserver({ sessionId, useInput, notify }: DraftObserverProps): null {
-  const length = useInput((input: InputState) => input.draft.trim().length)
-  const previous = useRef({ sessionId, length })
+  const draft = useInput((input: InputState) => input.draft)
+  const previous = useRef({ sessionId, draft, announced: false })
   useEffect(() => {
     const before = previous.current
-    previous.current = { sessionId, length }
-    if (before.sessionId !== sessionId) return
-    if (before.length === 0 && length > 0) notify(sessionId)
-  }, [sessionId, length, notify])
+    const nonempty = draft.trim().length > 0
+    const announce = before.sessionId === sessionId && before.draft !== draft
+      && nonempty && !before.announced
+    previous.current = { sessionId, draft,
+      announced: before.sessionId === sessionId && nonempty && (before.announced || announce) }
+    if (announce) notify(sessionId)
+  }, [sessionId, draft, notify])
   return null
 }

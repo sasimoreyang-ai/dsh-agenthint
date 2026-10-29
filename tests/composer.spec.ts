@@ -3,6 +3,7 @@ import { createElement } from 'react'
 import { act, create } from 'react-test-renderer'
 import type { ReactTestRenderer } from 'react-test-renderer'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import { LifecycleBridge } from '../src/lifecycle-bridge.ts'
 import { DraftObserver } from '../src/client/observer.ts'
 import type { DraftObserverProps } from '../src/client/observer.ts'
 import type { InputState } from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -54,15 +55,63 @@ describe('composer notifications', () => {
     act(() => tree!.update(createElement(DraftObserver, props('pasted block of text', notify, 'session-a'))))
     expect(notify).toHaveBeenCalledExactlyOnceWith('session-a')
   })
-  it('notifies for a paste that lands together with navigation', () => {
+  it('rebases navigation+paste and announces the next edit without requiring a clear', () => {
     const notify = vi.fn()
     act(() => { tree = create(createElement(DraftObserver, props('', notify, 'pressure-session'))) })
     act(() => tree!.update(createElement(DraftObserver, props('revisit now', notify, 'target-session'))))
     // Navigation alone must not notify; the observer simply rebases on the new session.
     expect(notify).not.toHaveBeenCalled()
-    act(() => tree!.update(createElement(DraftObserver, props('', notify, 'target-session'))))
-    act(() => tree!.update(createElement(DraftObserver, props('revisit now', notify, 'target-session'))))
+    act(() => tree!.update(createElement(DraftObserver, props('revisit now!', notify, 'target-session'))))
     expect(notify).toHaveBeenCalledExactlyOnceWith('target-session')
+    act(() => tree!.update(createElement(DraftObserver, props('revisit now!!', notify, 'target-session'))))
+    expect(notify).toHaveBeenCalledTimes(1)
+  })
+  it('announces the first edit of a restored draft, including same-length replacement', () => {
+    const notify = vi.fn()
+    act(() => { tree = create(createElement(DraftObserver, props('saved', notify))) })
+    expect(notify).not.toHaveBeenCalled()
+    act(() => tree!.update(createElement(DraftObserver, props('paved', notify))))
+    expect(notify).toHaveBeenCalledExactlyOnceWith('session-a')
+    act(() => tree!.update(createElement(DraftObserver, props('paved more', notify))))
+    expect(notify).toHaveBeenCalledTimes(1)
+  })
+  it('uses mounted text as a silent baseline and observes subsequent paste/edit', () => {
+    const notify = vi.fn()
+    act(() => { tree = create(createElement(DraftObserver, props('already pasted', notify))) })
+    expect(notify).not.toHaveBeenCalled()
+    act(() => tree!.update(createElement(DraftObserver, props('already pasted!', notify))))
+    expect(notify).toHaveBeenCalledExactlyOnceWith('session-a')
+  })
+  it('keeps request-time resume for a navigation+paste with no subsequent edit', async () => {
+    const send = vi.fn(async () => ({ status: 'accepted' as const, httpStatus: 200 }))
+    const bridge = new LifecycleBridge({ client: { send } as never, pendingOpAwaitMs: 100 })
+    try {
+      bridge.noteOrdinaryRequest(SessionId('target'), 'm')
+      bridge.noteOrdinaryRequest(SessionId('pressure'), 'm')
+      await bridge.awaitPendingOp(SessionId('target'))
+      const notify = (id: string) => bridge.onSessionComposing(SessionId(id))
+      act(() => { tree = create(createElement(DraftObserver, props('', notify, 'pressure'))) })
+      act(() => tree!.update(createElement(DraftObserver, props('pasted now', notify, 'target'))))
+      expect(send.mock.calls.map(args => args[0])).toEqual(['pause'])
+      const release = await bridge.beginOrdinary(SessionId('target'), 'm')
+      release()
+      expect(send.mock.calls.map(args => args[0])).toEqual(['pause', 'resume'])
+    } finally { bridge.dispose() }
+  })
+  it('does not announce unchanged drafts when notifier identity changes', () => {
+    const notify = vi.fn(), nextNotify = vi.fn()
+    act(() => { tree = create(createElement(DraftObserver, props('saved', notify))) })
+    act(() => tree!.update(createElement(DraftObserver, props('saved', nextNotify))))
+    expect(notify).not.toHaveBeenCalled()
+    expect(nextNotify).not.toHaveBeenCalled()
+  })
+  it('rearms after clearing a restored draft that has already announced', () => {
+    const notify = vi.fn()
+    act(() => { tree = create(createElement(DraftObserver, props('saved', notify))) })
+    act(() => tree!.update(createElement(DraftObserver, props('edited', notify))))
+    act(() => tree!.update(createElement(DraftObserver, props('  ', notify))))
+    act(() => tree!.update(createElement(DraftObserver, props('next paste', notify))))
+    expect(notify.mock.calls).toEqual([['session-a'], ['session-a']])
   })
   it('does not emit composing notifications for whitespace-only edits', () => {
     const notify = vi.fn()

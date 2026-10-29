@@ -182,6 +182,25 @@ function finishOf(raw: unknown): FinishReason {
   if (raw === 'content_filter') throw new LlmError('Provider refused the response', 'REFUSAL')
   throw malformed('unknown finish reason')
 }
+/** Only complete provider samples may replace token accounting; absence is not zero. */
+function tokenUsage(value: unknown): TokenUsage | undefined {
+  const raw = record(value)
+  const count = (v: unknown): number | undefined => {
+    if (v == null) return undefined
+    if (!Number.isSafeInteger(v) || (v as number) < 0) throw malformed('invalid token usage')
+    return v as number
+  }
+  const input = count(raw.prompt_tokens), output = count(raw.completion_tokens)
+  const cached = count(raw.prompt_tokens_details?.cached_tokens ?? raw.prompt_cache_hit_tokens) ?? 0
+  const total = count(raw.total_tokens), reasoning = count(raw.completion_tokens_details?.reasoning_tokens)
+  if (input !== undefined && cached > input) throw malformed('cached token count exceeds input')
+  if (output !== undefined && reasoning !== undefined && reasoning > output) throw malformed('reasoning token count exceeds output')
+  if (input === undefined || output === undefined) return undefined
+  if (total !== undefined && total !== input + output) throw malformed('total token count does not match input and output')
+  return { inputTokens: input - cached, outputTokens: output, ...cached ? { cacheReadTokens: cached } : {},
+    ...total === undefined ? {} : { totalTokens: total },
+    ...reasoning === undefined ? {} : { reasoningTokens: reasoning } }
+}
 async function* translate(events: AsyncIterable<Record<string, any> | 'done'>): AsyncGenerator<StreamChunk> {
   let textIndex: number | undefined, reasoningIndex: number | undefined, index = 0
   let reason: FinishReason | undefined, usage: TokenUsage | undefined
@@ -189,14 +208,7 @@ async function* translate(events: AsyncIterable<Record<string, any> | 'done'>): 
   for await (const event of events) {
     if (event === 'done') break
     if (event.usage != null) {
-      const raw = record(event.usage)
-      const count = (v: unknown) => { if (!Number.isSafeInteger(v) || (v as number) < 0) throw malformed('invalid token usage'); return v as number }
-      const input = count(raw.prompt_tokens ?? 0), output = count(raw.completion_tokens ?? 0)
-      const cached = count(raw.prompt_tokens_details?.cached_tokens ?? raw.prompt_cache_hit_tokens ?? 0)
-      if (cached > input) throw malformed('cached token count exceeds input')
-      usage = { inputTokens: input - cached, outputTokens: output, ...cached ? { cacheReadTokens: cached } : {},
-        ...raw.total_tokens === undefined ? {} : { totalTokens: count(raw.total_tokens) },
-        ...raw.completion_tokens_details?.reasoning_tokens === undefined ? {} : { reasoningTokens: count(raw.completion_tokens_details.reasoning_tokens) } }
+      usage = tokenUsage(event.usage) ?? usage
     }
     if (event.choices === undefined && event.usage === undefined) throw malformed('missing choices/usage')
     if (event.choices !== undefined && !Array.isArray(event.choices)) throw malformed('choices must be an array')

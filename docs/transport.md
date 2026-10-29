@@ -18,7 +18,9 @@ Chat声明文本能力。未由宿主转换的原生图片/文件与未知内容
 
 支持LF/CRLF/CR、跨字节与多行data。DONE结束流并取消剩余body。存在合法finish_reason的完整EOF可结束；缺失finish、非法JSON、未结束事件、流内error均不能报告正常stop。空正常答案报EMPTY_RESPONSE。content_filter报REFUSAL，未知finish reason报MALFORMED_RESPONSE。
 
-工具id/name/arguments允许分片，直到终止时确认身份与JSON完整后才提供可执行tool-call delta。长度截断不能执行不完整工具。usage区分未缓存输入与缓存读入；无效/矛盾计数拒绝而不造数据。单个SSE行/事件限制4MiB。
+工具id/name/arguments允许分片，直到终止时确认身份与JSON完整后才提供可执行tool-call delta。长度截断不能执行不完整工具。单个SSE行/事件限制4MiB。
+
+usage 区分未缓存输入与缓存读入。`prompt_tokens` 与 `completion_tokens` 必须都存在且为非负安全整数才发布完整 TokenUsage；空对象、缺失或 null 计数不补零，也不覆盖此前完整样本。未提供完整样本时正常回答仍可结束，但不输出 usage chunk。显式的零是合法测量值。已提供的无效计数拒绝；cached 不能大于 prompt，reasoning 不能大于 completion，若 total 提供则必须等于 prompt+completion（Chat 口径，reasoning 属于 completion）。这些校验不推测后端没有测量的值。
 
 响应读取、Hint和凭据等待服从signal及配置的流空闲超时。消费者退出会取消响应体。在消费者暂停取数据期间不计入provider idle time。
 
