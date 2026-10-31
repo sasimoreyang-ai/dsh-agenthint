@@ -1,7 +1,7 @@
 {
   "name": "@sasimoreyang-ai/dsh-llm-agent-hint",
   "description": "DSH provider with inherited DeepSeek settings, agent_hint and bounded session lifecycle control over Chat or Messages",
-  "version": "0.6.0-rc.7",
+  "version": "0.6.0-rc.8",
   "publishConfig": {
     "access": "public"
   },
