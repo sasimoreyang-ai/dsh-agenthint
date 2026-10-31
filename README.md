@@ -2,7 +2,7 @@
 
 为 **DSH 0.2.0-rc.2** 增加 **DeepSeek (agent-hint)** 路由。普通请求携带会话 Hint，生命周期事件向兼容协调器发送控制请求。无需修改 DSH 核心。[English](README.en.md)
 
-当前代码：**0.6.0-rc.6 发行候选**，基于未拆分 main。修复依赖锁定、缺测 usage 补零，以及浏览器观察器挂载、RPC 参数封装与异步恢复草稿误触发。已通过真实 stock DSH 浏览器验收（模型 HTTP 为本地 fixture）。尚未发布此版本 tag 或 npm 包；本候选的153实机/KV/性能验收尚未执行。
+当前代码：**0.6.0-rc.7 发行候选**，基于未拆分 main。保留 rc.6 的依赖、usage 和浏览器修复，补齐 Chat block-end，并及时交付工具增量。官方流检查与真实 AgentLoop 验证工具仅在完整有效的终态后执行。此前 rc.6 已通过真实 stock DSH 浏览器验收（模型 HTTP 为本地 fixture）；各版本证据见验证记录。尚未发布此版本 tag 或 npm 包；本候选的153实机/KV/性能验收尚未执行。
 
 ## 安装
 
@@ -15,7 +15,7 @@ dsh plugin --profile <你的profile> add 'github:sasimoreyang-ai/dsh-agenthint#f
 也可以在源码目录 `npm ci && npm run check && npm pack`，再安装生成的 tarball：
 
 ```sh
-dsh plugin --profile <你的profile> add /绝对路径/sasimoreyang-ai-dsh-llm-agent-hint-0.6.0-rc.6.tgz
+dsh plugin --profile <你的profile> add /绝对路径/sasimoreyang-ai-dsh-llm-agent-hint-0.6.0-rc.7.tgz
 ```
 
 重启相应 DSH 实例，选择 **DeepSeek (agent-hint)** 并新建会话。插件不会自动切换已有会话的 provider。需要 Node `^22.19.0 || >=24`、pnpm 与 DSH **0.2.0-rc.2**。包内已包含构建产物；本包未发布 npm registry。
@@ -83,6 +83,8 @@ Chat 缺失或不完整的 usage 不补零；只发布完整有效的计量样�
 ## 验证状态
 
 本候选的回归包含真实 stock Loader、AgentLoop、Tools、TokenMeter 与 BasicCompaction：工具两步闭环、压力自动摘要、compact信号、后台不记账及配置更新。模型HTTP为可控本地fixture，不能代替真实模型/KV验收。当前执行记录见 [STANDARDIZATION.md](STANDARDIZATION.md)。
+
+Chat 会输出与块匹配的 block-end，并在工具 ID 可用后及时输出名称/参数增量。增量是暂态数据，不授权执行；所有工具身份与完整 JSON 在正常终态前统一校验，截断、错误和取消不可执行工具。DSH 首 token 仍包含宿主/适配器开销；精确 HTTP TTFT 及预取收益需要独立采集。详见[流协议修复](docs/stream-contract-20261031.md)。
 
 历史 v0.5.x 仓库记录100K长前缀/HBM压力下被动缓存2.35秒、主动预取2.10秒，约10.7% TTFT增量；每场景n=4。91.9%的相对冷态降幅包含外部缓存整体收益。这些是历史特定负载结果，不能当作本候选或一般日常聊天的收益保证。插件不部署模型、不配置memcache，也不承诺无条件加速。
 

@@ -1,6 +1,6 @@
 # 路径 B：纯插件补充触发源
 
-本文保留v0.4.0触发源调查和 rc.2 激活触发历史。当前0.6.0-rc.6的顺序、草稿通知、取消和失败策略以[可靠性合同](reliability.md)为准；当前客户端不再在挂载/切页时调用 activated。rc.6 在 stock 连接上探测服务，并以带 args 封装的 RPC 调用；观察器改用当前 composer 内的 DOM 编辑事件，避免异步恢复草稿误触发。
+本文保留v0.4.0触发源调查和 rc.2 激活触发历史。当前0.6.0-rc.7的顺序、草稿通知、取消和失败策略以[可靠性合同](reliability.md)为准；当前客户端不再在挂载/切页时调用 activated。rc.6 引入的 stock 连接探测、args 封装和 composer DOM 编辑事件继续保留；rc.7 的流协议修复不更改这些触发条件。
 
 本文描述独立协调器控制能力。v0.4.0 起插件只有这一种模式；端点与模型目录从 `llm-deepseek` 路由继承，见 [endpoint-inheritance.md](endpoint-inheritance.md)。
 

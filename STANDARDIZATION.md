@@ -1,5 +1,17 @@
 # 实现与验证记录
 
+## 0.6.0-rc.7：Chat 块终态、工具增量与执行安全（2026-10-31）
+
+基线 rc.6 `0e98b04`，保持分支 `fix/main-release-correctness-20261029` 与目标 DSH **0.2.0-rc.2**。补齐 Chat 正常终态前的 block-end，在真实工具 ID 可用后及时输出暂态名称/参数增量，保留所有调用的终态身份/JSON 校验。详见[本轮合同](docs/stream-contract-20261031.md)。
+
+- Windows、Node v24.19.0、npm 11.17.0；`npm ci --no-audit --no-fund --prefer-offline` 后 `npm run check`：**20 文件、203 项测试通过**，类型、构建、50 个打包文件与锁元数据检查通过。npm 的六项安装脚本审批提示未通过更改全局策略绕过，不认证无关原生工具。
+- 新增 **12 项** stock LlmRuntime + InvariantRegistry + llm/invariant 组合测试：文本/推理/并行分片工具、无参数默认、length、缺失/重复身份、非法 JSON、取消，以及门控响应下“终帧未发送时已有首工具 token”。
+- 新增 **6 项**实际 AgentLoop + Tools + 官方 invariant 测试：暂态增量已可见时执行数仍为零；正常终态只执行一次；畸形、重复 ID、length、流错误、取消后均不执行。
+- 原有工具参数非法回归更新为检查“允许暂态 delta，但不完成工具块、不产生成功终态”，并由上述真实 AgentLoop 测试补齐执行边界，不能仅靠“没有 delta”推断安全。
+- rc.6 浏览器能力探测与草稿事件逻辑未改变；下节的 13+6 项浏览器结果保留其版本归属。本节标准回归使用真实宿主组件和 fixture 模型响应，不把它写成153实机验收。
+
+**指标边界：** 不再一律等工具流结束才提供首增量，但必要 ID 等待与宿主/屏障开销仍存在。DSH 首 token 不自动等于 HTTP TTFT；本轮门控/时序测试不能当成真实模型或预取收益。**NOT-RUN：node153 部署、真实 KV 搬运/消费、真实性能。**
+
 ## 0.6.0-rc.6：main 正确性与独立浏览器验收（2026-10-29）
 
 基线 main `eb0e23d`，修复分支 `fix/main-release-correctness-20261029`，目标 DSH **0.2.0-rc.2**。rc.5 修复锁文件和 usage 计量；独立验收进一步发现浏览器的 Remote 等待、raw RPC 封装和异步草稿恢复三处缺陷，均在 rc.6 修复。[本次说明](docs/release-correctness-20261029.md)记录精确合同。

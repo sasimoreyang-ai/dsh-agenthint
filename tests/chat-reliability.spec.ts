@@ -112,11 +112,12 @@ describe('SSE completion, errors and cancellation', () => {
       { type: 'tool-call', id: 'second', name: 'write', arguments: '{"x":2}' },
     ])
   })
-  it('rejects incomplete tool arguments before any executable tool-call delta', async () => {
+  it('rejects incomplete tool arguments after provisional deltas without completing the call', async () => {
     response(event({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c', function: { name: 'read', arguments: '{"p":' } }] }, finish_reason: 'tool_calls' }] }) + 'data: [DONE]\n\n')
     const chunks: StreamChunk[] = []
     try { for await (const c of adapter().stream(options)) chunks.push(c) } catch (e) { expect(e).toMatchObject({ code: 'MALFORMED_RESPONSE' }) }
-    expect(chunks.some(c => c.type === 'tool-call-delta')).toBe(false)
+    expect(chunks.some(c => c.type === 'tool-call-delta')).toBe(true)
+    expect(chunks.some(c => c.type === 'block-end' || c.type === 'finish')).toBe(false)
   })
   it.each([[401, 'AUTH'], [429, 'RATE_LIMIT'], [503, 'SERVER'], [400, 'CONTEXT_WINDOW_EXCEEDED']])('classifies HTTP %s for host recovery', async (status, code) => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: { message: status === 400 ? 'maximum context length exceeded' : 'fixture' } }), { status: status as number, headers: { 'retry-after': '2', 'x-request-id': 'fixture-request' } })))

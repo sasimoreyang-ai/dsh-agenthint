@@ -2,7 +2,7 @@
 
 Adds a **DeepSeek (agent-hint)** provider to **DSH 0.2.0-rc.2**, with session hints and lifecycle controls. No DSH core edits. [中文文档](README.md).
 
-Current source: **0.6.0-rc.6 release candidate** on `fix/main-release-correctness-20261029`, based on the unsplit main branch. Fixes dependency locking, missing/contradictory usage, browser observer mounting, the RPC payload envelope and asynchronous draft-restoration false signals. Actual stock DSH browser acceptance passed with local fixture model HTTP. No release tag/npm publication or node153 acceptance for this candidate yet.
+Current source: **0.6.0-rc.7 release candidate** on `fix/main-release-correctness-20261029`, based on the unsplit main branch. Retains rc.6 fixes and adds Chat block-end events and timely provisional tool deltas. The stock invariant and AgentLoop verify terminal validation before tool execution. The earlier rc.6 passed actual stock DSH browser acceptance with local fixture model HTTP; version-specific evidence is recorded below. No release tag/npm publication or node153 acceptance for this candidate yet.
 
 ## Install
 
@@ -39,6 +39,8 @@ Quarantine is in memory and does not survive reload/restart or coordinate multip
 ## Evidence
 
 Local regression uses actual stock Loader, AgentLoop, Tools, TokenMeter and BasicCompaction with fixture model HTTP. It verifies a two-step tool task, pressure compaction and compact signaling, background isolation and configuration changes. See [validation record](STANDARDIZATION.md). It does not establish real KV, model quality or performance.
+
+Chat closes each block before normal finish and streams provisional tool names/arguments once a tool ID is available. All tool identities and complete JSON remain validated before successful completion. The stock loop never executes provisional, malformed, truncated or cancelled calls. DSH first-token time still includes host/adapter overhead; exact HTTP TTFT requires independent collection. See [stream contract fixes](docs/stream-contract-20261031.md).
 
 Historical v0.5.x repository measurements reported about 10.7% incremental TTFT improvement over passive cache loading under 100K-prefix/HBM pressure, n=4 per scenario. The 91.9% cold-baseline reduction includes cache infrastructure benefits. Those results do not certify this candidate or promise everyday-chat gains. The plugin does not deploy models or configure memcache.
 
