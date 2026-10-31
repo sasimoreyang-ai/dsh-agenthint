@@ -10,9 +10,12 @@ export interface BridgeWarnSink {
 export interface LifecycleBridgeOptions {
     client: SessionControlClient;
     pendingOpAwaitMs: number;
+    /** How long a disposed-but-unsafe session stays quarantined before its state is dropped. */
+    quarantineTtlMs?: number;
     warn?: BridgeWarnSink;
 }
 export declare const DEFAULT_PENDING_OP_AWAIT_MS = 2000;
+export declare const DEFAULT_QUARANTINE_TTL_MS: number;
 export declare class ControlBarrierError extends LlmError {
     constructor();
 }
@@ -42,6 +45,11 @@ export declare class LifecycleBridge {
     onSessionComposing(sessionId: SessionId): void;
     onSessionEvent(session: Session, event: SessionEvent): void;
     onSessionDisposed(session: Session): void;
+    /**
+     * Drop quarantined states whose TTL has elapsed. Runs on every disposal so the
+     * map cannot grow without bound in a long-lived host.
+     */
+    private sweepQuarantine;
     onSessionArchived(sessionId: SessionId): void;
     onSessionUnarchived(sessionId: SessionId): void;
     private markForPause;

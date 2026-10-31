@@ -26,7 +26,7 @@ export { DEFAULT_CONTROL_RETRIES, DEFAULT_CONTROL_TIMEOUT_MS, SessionControlClie
 export type { ControlResult, ControlConnection, ControlWarnSink, SessionControlClientOptions } from './control-client.ts';
 export { agentHintPrepareExtensions } from './extension.ts';
 export type { AgentHintExtensionOptions } from './extension.ts';
-export { ControlBarrierError, DEFAULT_PENDING_OP_AWAIT_MS, LifecycleBridge } from './lifecycle-bridge.ts';
+export { ControlBarrierError, DEFAULT_PENDING_OP_AWAIT_MS, DEFAULT_QUARANTINE_TTL_MS, LifecycleBridge } from './lifecycle-bridge.ts';
 export type { BridgeWarnSink, LifecycleBridgeOptions } from './lifecycle-bridge.ts';
 export type { AgentHintCacheControl, AgentHintWire, SessionControlVerb } from './types.ts';
 export declare const name = "llm-agent-hint";

@@ -12,9 +12,12 @@ export interface BridgeWarnSink { (message: string, error?: unknown): void }
 export interface LifecycleBridgeOptions {
   client: SessionControlClient
   pendingOpAwaitMs: number
+  /** How long a disposed-but-unsafe session stays quarantined before its state is dropped. */
+  quarantineTtlMs?: number
   warn?: BridgeWarnSink
 }
 export const DEFAULT_PENDING_OP_AWAIT_MS = 2_000
+export const DEFAULT_QUARANTINE_TTL_MS = 30 * 60 * 1_000
 export class ControlBarrierError extends LlmError {
   constructor() {
     super('AgentHint: a cache-changing control is pending or has an unknown outcome; this session cannot safely start another request. Check the coordinator before continuing.', 'CONTROL_BARRIER')
@@ -41,6 +44,12 @@ interface SessionState {
   active: number
   dataIdle: Promise<void> | undefined
   releaseData: (() => void) | undefined
+  /**
+   * Set when the session was disposed while `unsafe`. The state is retained so a
+   * reopened session still refuses new inference, but it is swept once
+   * `quarantineTtlMs` has elapsed so an abandoned id cannot pin memory forever.
+   */
+  quarantineSince: number | undefined
 }
 export class LifecycleBridge {
   private readonly states = new Map<string, SessionState>()
@@ -152,6 +161,9 @@ export class LifecycleBridge {
     state.pausePending = false
     state.pauseSent = false
     state.parentSessionId = session.header.parentSession
+    // The session is live again, so it must not be swept; the retained `unsafe`
+    // flag still refuses new inference until the coordinator is reconciled.
+    state.quarantineSince = undefined
   }
   ensureResume(sessionId: SessionId | undefined, model: string): void {
     if (sessionId === undefined || this.disposed) return
@@ -181,13 +193,32 @@ export class LifecycleBridge {
   onSessionDisposed(session: Session): void {
     const id = String(session.id), state = this.states.get(id)
     if (this.lastOrdinarySessionId === id) this.lastOrdinarySessionId = undefined
+    this.sweepQuarantine()
     if (state?.lastModel === undefined) { this.states.delete(id); return }
     const incarnation = state.incarnation
     const pending = state.archived ? state.pendingOp ?? Promise.resolve() : this.track(id, 'stop', state.lastModel)
     void pending.then(() => {
-      // Unknown mutation outcomes remain quarantined even if the session reopens.
-      if (this.states.get(id) === state && state.incarnation === incarnation && !state.unsafe) this.states.delete(id)
+      if (this.states.get(id) !== state || state.incarnation !== incarnation) return
+      if (!state.unsafe) { this.states.delete(id); return }
+      // Unknown mutation outcomes stay quarantined even if the session reopens, but
+      // only for a bounded time: an abandoned id must not pin memory forever.
+      state.quarantineSince = Date.now()
     })
+  }
+  /**
+   * Drop quarantined states whose TTL has elapsed. Runs on every disposal so the
+   * map cannot grow without bound in a long-lived host.
+   */
+  private sweepQuarantine(): void {
+    const ttl = this.options.quarantineTtlMs ?? DEFAULT_QUARANTINE_TTL_MS
+    const now = Date.now()
+    for (const [id, state] of this.states) {
+      if (state.quarantineSince === undefined) continue
+      if (state.active > 0 || state.pendingOp !== undefined) continue
+      if (now - state.quarantineSince < ttl) continue
+      this.states.delete(id)
+      this.options.warn?.(`llm-agent-hint: dropped quarantine state for ${id} after ${ttl}ms`)
+    }
   }
   onSessionArchived(sessionId: SessionId): void {
     const id = String(sessionId), state = this.states.get(id)
@@ -223,7 +254,8 @@ export class LifecycleBridge {
       state = { archived: false, seeded: false, resumeSent: false, resumeAttempt: {}, nextResumeAt: 0,
         agentStatus: 'idle', pausePending: false, pauseSent: false, firstOrdinarySent: false,
         parentSessionId: undefined, lastModel: undefined, pendingOp: undefined, mutations: 0,
-        unsafe: false, generation: 0, incarnation: {}, active: 0, dataIdle: undefined, releaseData: undefined }
+        unsafe: false, generation: 0, incarnation: {}, active: 0, dataIdle: undefined, releaseData: undefined,
+        quarantineSince: undefined }
       this.states.set(id, state)
     }
     return state
