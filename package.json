@@ -45,7 +45,7 @@
     "build": "tsc -b && node scripts/build-client.mjs",
     "typecheck": "tsc -b --force",
     "clean": "node -e \"require('fs').rmSync('lib',{recursive:true,force:true})\"",
-    "test": "vitest run",
+    "test": "vitest run && node --test tests/trace.test.mjs",
     "check": "npm run typecheck && npm test && node scripts/check-package.mjs",
     "pretest": "npm run build",
     "check:install": "node scripts/check-install.mjs"

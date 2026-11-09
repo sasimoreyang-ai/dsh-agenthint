@@ -13,6 +13,7 @@
 import type { DeepSeekLlmApiExtensionRequest, PreparedDeepSeekLlmApiExtensions } from '@deepseek-ai/dsh-deepseek-llm-api-extensions';
 import type { LifecycleBridge } from './lifecycle-bridge.ts';
 import type { AgentHintCacheControl } from './types.ts';
+import type { HintTrace } from './trace.ts';
 /** Request-local dependencies for {@link agentHintPrepareExtensions}. */
 export interface AgentHintExtensionOptions {
     /** The registry chain this route still composes with (usually the global `deepseekLlmApiExtensions` service). */
@@ -23,6 +24,7 @@ export interface AgentHintExtensionOptions {
     streamLease?: boolean;
     /** Static coordinator cache policy copied verbatim into every hint. */
     cacheControl?: AgentHintCacheControl | undefined;
+    trace?: HintTrace;
 }
 /**
  * Build the route's `prepareExtensions`: barrier, hint construction, and

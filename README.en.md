@@ -45,3 +45,7 @@ Chat closes each block before normal finish and streams provisional tool names/a
 Historical v0.5.x repository measurements reported about 10.7% incremental TTFT improvement over passive cache loading under 100K-prefix/HBM pressure, n=4 per scenario. The 91.9% cold-baseline reduction includes cache infrastructure benefits. Those results do not certify this candidate or promise everyday-chat gains. The plugin does not deploy models or configure memcache.
 
 See the [2026-10-29 fix and verification notes](docs/release-correctness-20261029.md). The [2026-10-26 notes](docs/manual-review-20261026.md) describe historical rc.2 behavior.
+
+## Hint trace
+
+Adapter Hint tracing is enabled by default, with a separate per-session Web download. See [Hint trace](docs/trace.md) for configuration, bounded retention, and the distinction between HTTP acceptance and engine execution.

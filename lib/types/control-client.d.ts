@@ -1,4 +1,5 @@
 import type { SessionControlVerb } from './types.ts';
+import type { HintTrace } from './trace.ts';
 export type ControlResult = {
     status: 'accepted';
     httpStatus: number;
@@ -28,6 +29,7 @@ export interface SessionControlClientOptions {
     timeoutMs: number;
     retries: number;
     warn?: ControlWarnSink;
+    trace?: HintTrace;
 }
 export declare const DEFAULT_CONTROL_TIMEOUT_MS = 5000;
 export declare const DEFAULT_CONTROL_RETRIES = 1;

@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { DraftObserver } from './observer.ts'
+import { installTraceDownload } from './trace-download.ts'
 
 export const name = 'agent-hint-composer'
 // A dynamically discovered host @Remote does not create a generated Client
@@ -19,6 +20,7 @@ export function apply(ctx: Context): void {
   const connection = ctx.get('connection') as ConnectionHandle | undefined
   if (connection === undefined) return
   const lifetime = new AbortController()
+  installTraceDownload(ctx, connection, lifetime.signal)
   let generation: ReturnType<ConnectionHandle['generation']['getSnapshot']>
   let probe: AbortController | undefined
   let withdraw: (() => void) | undefined

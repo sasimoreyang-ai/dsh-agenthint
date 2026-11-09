@@ -19,6 +19,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { buildAgentHint } from './agent-hint.ts'
 import type { LifecycleBridge } from './lifecycle-bridge.ts'
 import type { AgentHintCacheControl } from './types.ts'
+import type { HintTrace } from './trace.ts'
 
 /** Request-local dependencies for {@link agentHintPrepareExtensions}. */
 export interface AgentHintExtensionOptions {
@@ -30,6 +31,7 @@ export interface AgentHintExtensionOptions {
   streamLease?: boolean
   /** Static coordinator cache policy copied verbatim into every hint. */
   cacheControl?: AgentHintCacheControl | undefined
+  trace?: HintTrace
 }
 
 /**
@@ -65,9 +67,14 @@ export function agentHintPrepareExtensions(
       firstOrdinarySent: facts.firstOrdinarySent,
     })
     const base = await options.chained(request)
+    // The official Messages hook proves preparation and post-2xx acceptance,
+    // but does not expose actual dispatch, HTTP status, or failed attempts.
+    const observation = hint === undefined ? undefined : options.trace?.begin({
+      plane: 'data', transport: 'messages', model, hint }, 'prepared')
     return {
       fields: { ...base.fields, ...hint === undefined ? {} : { agent_hint: hint } },
       async accept() {
+        observation?.finish('accepted')
         await base.accept()
         if (bridge !== undefined && hint !== undefined) bridge.noteOrdinaryRequest(sessionId, model)
       },
