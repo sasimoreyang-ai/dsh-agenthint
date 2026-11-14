@@ -1,6 +1,6 @@
 # DSH AgentHint
 
-Adds a **DeepSeek (agent-hint)** provider to **DSH 0.2.0-rc.2**, with session hints and lifecycle controls. No DSH core edits. [中文文档](README.md).
+Adds a **DeepSeek (agent-hint)** provider to **DSH 0.2.2-rc.1**, with session hints and lifecycle controls. No DSH core edits. [中文文档](README.md).
 
 Current source: **0.6.0-rc.7 release candidate** on `fix/main-release-correctness-20261029`, based on the unsplit main branch. Retains rc.6 fixes and adds Chat block-end events and timely provisional tool deltas. The stock invariant and AgentLoop verify terminal validation before tool execution. The earlier rc.6 passed actual stock DSH browser acceptance with local fixture model HTTP; version-specific evidence is recorded below. No release tag/npm publication or node153 acceptance for this candidate yet.
 
@@ -12,7 +12,7 @@ dsh plugin --profile <your-profile> add 'github:sasimoreyang-ai/dsh-agenthint#fi
 
 For acceptance, pin an audited commit. Alternatively run `npm ci`, `npm run check`, `npm pack`, then install the resulting absolute tarball path with `dsh plugin --profile <your-profile> add <tarball>`.
 
-Restart the relevant instance, select **DeepSeek (agent-hint)** and start a new session. Installation does not switch existing sessions. Requires Node `^22.19.0 || >=24`, pnpm and DSH **0.2.0-rc.2**. Built artifacts are included; this package is not published to npm registry.
+Restart the relevant instance, select **DeepSeek (agent-hint)** and start a new session. Installation does not switch existing sessions. Requires Node `^22.19.0 || >=24`, pnpm and DSH **0.2.2-rc.1**. Built artifacts are included; this package is not published to npm registry.
 
 ## Configuration and protocols
 
