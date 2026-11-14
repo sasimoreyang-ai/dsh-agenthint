@@ -2,8 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Llm, { BlockAssembler, isTokenDelta } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
-import Invariants from '@deepseek-ai/dsh-invariants'
-import * as LlmInvariant from '@deepseek-ai/dsh-llm/invariant'
 import { ChatCompletionsAdapter } from '../src/chat-adapter.ts'
 
 const options: GenerateOptions = { provider: 'review', model: 'fixture',
@@ -21,8 +19,6 @@ async function host() {
     options: () => ({ baseURL: 'http://fixture.invalid', defaults: { thinking: 'disabled' }, models: [{ id: 'fixture' }] }),
     resolveAuth: async () => ({ headers: {} }),
   }))
-  await ctx.plugin(Invariants)
-  await ctx.plugin(LlmInvariant)
   return ctx.llm
 }
 function respond(frames: unknown[]) {
@@ -31,7 +27,11 @@ function respond(frames: unknown[]) {
 async function collect(stream: AsyncIterable<StreamChunk>) {
   const chunks: StreamChunk[] = []; for await (const chunk of stream) chunks.push(chunk); return chunks
 }
-describe('Chat through the actual stock stream invariant', () => {
+// DSH 0.2.2 removed the package-owned invariant plugin framework
+// (@deepseek-ai/dsh-invariants and dsh-llm/invariant no longer exist), so the
+// stream-contract checks below are exercised directly against the assembled chunks
+// and BlockAssembler instead of through a plugged-in invariant companion.
+describe('Chat stream contract as assembled by the stock runtime', () => {
   it.each([
     { name: 'text and usage', frames: [event({ content: 'OK' }, 'stop'), { choices: [], usage: { prompt_tokens: 3, completion_tokens: 1 } }], kind: 'stop', blocks: [{ type: 'text', text: 'OK' }] },
     { name: 'interleaved reasoning/text', frames: [event({ reasoning_content: 'think' }), event({ content: 'O' }), event({ reasoning_content: ' more', content: 'K' }, 'stop')], kind: 'stop', blocks: [{ type: 'reasoning', text: 'think more' }, { type: 'text', text: 'OK' }] },

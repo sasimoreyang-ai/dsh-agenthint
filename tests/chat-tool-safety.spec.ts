@@ -6,10 +6,9 @@ import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import Agents from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import Tools, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
+import Tools, { defineTool } from '@deepseek-ai/dsh-tools'
 import Projections from '@deepseek-ai/dsh-session-projection'
-import Invariants from '@deepseek-ai/dsh-invariants'
-import * as LlmInvariant from '@deepseek-ai/dsh-llm/invariant'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -35,18 +34,22 @@ describe('stock AgentLoop execution after provisional Chat tool deltas', () => {
         } }))
       }))
       ctx = new Context()
-      await ctx.plugin(SessionStore); await ctx.plugin(Llm); await ctx.plugin(Agents)
-      await ctx.plugin(SystemPrompt); await ctx.plugin(Tools); await ctx.plugin(Projections)
+      // 0.2.2 announces Session projections before Agents can activate (the Agents
+      // plugin injects sessionProjections), so the registry must mount first.
+      await ctx.plugin(SessionStore); await ctx.plugin(Llm); await ctx.plugin(Projections)
+      await ctx.plugin(Agents); await ctx.plugin(SystemPrompt); await ctx.plugin(Tools)
+      // 0.2.2 splits tool dispatch out of the registry: a composition must mount an executor.
+      await ctx.plugin(NativeToolExecutor)
       ctx.llm.registerAdapter(['safety'], new ChatCompletionsAdapter({
         options: () => ({ baseURL: 'http://fixture.invalid', defaults: { thinking: 'disabled' }, models: [{ id: 'fixture', contextWindow: 32768, maxTokens: 128 }] }),
         resolveAuth: async () => ({ headers: {} }),
       }))
-      await ctx.plugin(Invariants); await ctx.plugin(LlmInvariant)
       ctx.on('llm/stream', (_options, next) => (async function* () {
         for await (const chunk of next()) { observed.push(chunk); if (isTokenDelta(chunk)) firstToken(); yield chunk }
       })(), { global: true })
-      ctx.tools.register(defineContentToolFixture({ name: 'fixture_action', description: 'Count fixture executions', parameters: {},
-        execute: async () => { executions++; return [{ type: 'text', text: 'fixture result' }] } }))
+      ctx.tools.register(defineTool({ name: 'fixture_action', description: 'Count fixture executions', parameters: {},
+        output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+        execute: async () => { executions++; return 'fixture result' } }))
       await ctx.plugin(AgentLoop, { agents: [] })
       const handle = await ctx.agents.create({ sessionId: SessionId(`tool-safety-${ending}`),
         agentOptions: { provider: 'safety', model: 'fixture' } })

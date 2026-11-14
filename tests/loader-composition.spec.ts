@@ -5,6 +5,8 @@ import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import { TypertGatewayService } from '@deepseek-ai/dsh-api-gateway'
+import RemoteAccessService from '@deepseek-ai/dsh-api-remote-access'
+import { Peer } from '@deepseek-ai/dsh-client-connection'
 import { createServer } from 'node:http'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -19,7 +21,7 @@ afterEach(async () => {
   server = undefined; vi.unstubAllEnvs()
 })
 
-describe('built plugin on stock rc.1 Loader and services', () => {
+describe('built plugin on the stock Loader and services', () => {
   it('sends start/pause/resume/compact/stop through real transports without core events', async () => {
     vi.stubEnv('DSH_HOME', await mkdtemp(join(tmpdir(), 'dsh-agenthint-test-')))
     const requests: { path: string; key?: string; body: Record<string, any> }[] = []
@@ -59,7 +61,12 @@ describe('built plugin on stock rc.1 Loader and services', () => {
     await ctx.plugin(WorkspaceRegistry)
     const originalArchive = Object.getPrototypeOf(ctx.workspaceRegistry).archiveSession
     await ctx.plugin(TypertRegistry)
+    // 0.2.2 made the Gateway depend on method-level access control, so every
+    // composition that mounts it mounts RemoteAccessService too.
+    await ctx.plugin(RemoteAccessService)
     await ctx.plugin(TypertGatewayService)
+    // 0.2.2 requires every in-process call to name the Peer it speaks for.
+    const peer = new Peer(ctx, { principal: { kind: 'owner' } })
     await ctx.plugin(Loader, { baseUrl: pathToFileURL(process.cwd() + '/').href })
     const loader = ctx.loader
     const entries = [
@@ -85,7 +92,7 @@ describe('built plugin on stock rc.1 Loader and services', () => {
     await run(a.id)
     await run(b.id)
     await vi.waitFor(() => expect(requests.some(r => r.body.agent_hint?.session_control?.type === 'pause')).toBe(true))
-    await ctx.typertGateway.invoke({ namespace: 'agentHintSignals', method: 'composing', args: { request: { sessionId: a.id } } })
+    await ctx.typertGateway.invoke({ namespace: 'agentHintSignals', method: 'composing', args: { request: { sessionId: a.id } }, peer })
     await run(a.id)
     await run(a.id, 'compaction')
     ctx.emit('session/event', a, { type: 'compaction/end', data: { compactionId: 'fixture-c', turn: 1 }, time: 1, seq: 1 } as never)
@@ -105,7 +112,7 @@ describe('built plugin on stock rc.1 Loader and services', () => {
     await Promise.all([ctx.workspaceRegistry.archiveSession(a.id), ctx.workspaceRegistry.unarchiveSession(a.id)])
     expect(ctx.workspaceRegistry.archivedSessionIds).not.toContain(a.id)
     const resumesBefore = requests.filter(r => r.body.agent_hint?.session_control?.type === 'resume').length
-    await ctx.typertGateway.invoke({ namespace: 'agentHintSignals', method: 'composing', args: { request: { sessionId: a.id } } })
+    await ctx.typertGateway.invoke({ namespace: 'agentHintSignals', method: 'composing', args: { request: { sessionId: a.id } }, peer })
     await vi.waitFor(() => expect(requests.filter(r => r.body.agent_hint?.session_control?.type === 'resume').length).toBe(resumesBefore + 1))
     // Volatile connection changes must keep endpoint and credential together.
     const updated = entries.map(entry => entry.id === 'hint'

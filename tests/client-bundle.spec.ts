@@ -5,9 +5,10 @@ import { createRequire } from 'node:module'
 import { Context } from '@deepseek-ai/cordis'
 import * as React from 'react'
 import { create, act } from 'react-test-renderer'
-import { OperatorPeer } from '@deepseek-ai/dsh-client-connection'
+import { Peer } from '@deepseek-ai/dsh-client-connection'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import { TypertGatewayService } from '@deepseek-ai/dsh-api-gateway'
+import RemoteAccessService from '@deepseek-ai/dsh-api-remote-access'
 import { AgentHintSignals } from '../lib/types/composing-service.js'
 import { LifecycleBridge } from '../src/lifecycle-bridge.ts'
 import { composerDom } from './helpers/composer-dom.ts'
@@ -116,8 +117,16 @@ describe('shipped browser factory on stock connection services', () => {
     let dispatch!: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<Reply>
     let f: Awaited<ReturnType<typeof fixture>> | undefined
     try {
-      host.provide('connection', { operator: new OperatorPeer(host), rpc: { intercept: (_channel: string, _claim: unknown, handler: typeof dispatch) => { dispatch = handler; return () => {} } } } as never)
-      await host.plugin(TypertRegistry); await host.plugin(TypertGatewayService)
+      // 0.2.2 admits every call through a Peer (the former single OperatorPeer is gone)
+      // and intercepts the shared channel by an endpoint-ownership test.
+      const peer = new Peer(host, { principal: { kind: 'owner' } })
+      host.provide('connection', { rpc: { intercept: (_channel: string, _matches: (endpoint: string) => boolean,
+        handler: (endpoint: string, payload: unknown, signal: AbortSignal, peer: unknown) => Promise<Reply>) => {
+        dispatch = (endpoint, payload, signal) => handler(endpoint, payload, signal, peer); return async () => {}
+      } } } as never)
+      await host.plugin(TypertRegistry)
+      // The Gateway now depends on method-level access control.
+      await host.plugin(RemoteAccessService); await host.plugin(TypertGatewayService)
       await host.plugin(AgentHintSignals, bridge)
       bridge.noteOrdinaryRequest('wire-a' as never, 'm'); bridge.noteOrdinaryRequest('wire-b' as never, 'm')
       await bridge.awaitPendingOp('wire-a' as never); controls.length = 0

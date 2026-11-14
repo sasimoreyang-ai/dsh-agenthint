@@ -12,8 +12,9 @@ import Llm, { createUserMessage } from '@deepseek-ai/dsh-llm'
 import Agents from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import Tools, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
+import Tools, { defineTool } from '@deepseek-ai/dsh-tools'
 import Projections from '@deepseek-ai/dsh-session-projection'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import BasicCompaction from '@deepseek-ai/dsh-compaction-basic'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
@@ -55,14 +56,18 @@ describe('default Chat on the stock DSH host', () => {
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
     baseURL = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
     source = { baseURL: `${baseURL}/v1`, models: [{ id: 'first-model' }, { id: 'selected-model', contextWindow: 32768, maxTokens: 128 }], thinking: 'disabled', apiKeyEnv: 'SOURCE_KEY' }
-    await ctx.plugin(SessionStore); await ctx.plugin(Llm); await ctx.plugin(Agents)
-    await ctx.plugin(SystemPrompt); await ctx.plugin(Tools); await ctx.plugin(Projections)
+    // 0.2.2 announces Session projections before Agents can activate (the Agents
+    // plugin injects sessionProjections), so the registry must mount first.
+    await ctx.plugin(SessionStore); await ctx.plugin(Llm); await ctx.plugin(Projections)
+    await ctx.plugin(Agents); await ctx.plugin(SystemPrompt); await ctx.plugin(Tools)
+    // 0.2.2 splits tool dispatch out of the registry: a composition must mount an executor.
+    await ctx.plugin(NativeToolExecutor)
     ctx.provide('credentials', { resolve: async () => ({ value: 'fixture-source-key' }) } as never)
     await ctx.plugin(Loader, { baseUrl: pathToFileURL(process.cwd() + '/').href }); await update()
     ctx.systemPrompt.section({ name: 'fixture', order: 0, text: 'Use fixture tools and preserve these system instructions.' })
-    ctx.tools.register(defineContentToolFixture({ name: 'fixture_read', description: 'Read fixture', parameters: {}, execute: async () => {
-      toolExecutions++; return [{ type: 'text', text: 'fixture tool result' }]
-    } }))
+    ctx.tools.register(defineTool({ name: 'fixture_read', description: 'Read fixture', parameters: {},
+      output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+      execute: async () => { toolExecutions++; return 'fixture tool result' } }))
     await ctx.plugin(AgentLoop, { agents: [] })
     await ctx.plugin(TokenMeter)
     ctx.on('session/event', (_session, event) => { if (event.type === 'compaction/end') compactions.push(event.data) }, { global: true })
