@@ -20,7 +20,13 @@ export interface ChatConnectionOptions {
 }
 export interface ChatRequestFacts {
   sessionId: string | undefined
-  purpose: GenerateOptions['purpose']
+  /**
+   * Declared request purpose, or `undefined` for an ordinary conversation request.
+   * DSH 0.2.2 made purposes an open, declaration-merged key set
+   * (`GenerateOptions<Purpose extends string>`), so a forwarding adapter must treat
+   * this as a plain string rather than the old `'compaction' | 'session-title'` union.
+   */
+  purpose: string | undefined
   model: string
   signal: AbortSignal
 }
@@ -61,7 +67,7 @@ function requestText(blocks: readonly ContentBlock[], role: string): string {
   }
   return text.join('\n')
 }
-function toChatMessage(message: GenerateOptions['messages'][number]): ChatMessage | undefined {
+function toChatMessage(message: GenerateOptions<string>['messages'][number]): ChatMessage | undefined {
   const role = message.role
   if (!['system', 'developer', 'user', 'assistant', 'tool'].includes(role)) throw new LlmError('Unsupported message role', 'INVALID_REQUEST')
   const blocks = typeof message.content === 'string' ? [{ type: 'text' as const, text: message.content }] : message.content
@@ -99,7 +105,7 @@ function modelInfo(connection: ChatConnectionOptions, provider: string, model: s
       defaultEffort: ReasoningEffortId(off ? 'off' : connection.defaults?.reasoningEffort ?? 'high') },
   }
 }
-function buildBody(options: GenerateOptions, connection: ChatConnectionOptions, hint: AgentHintWire | undefined) {
+function buildBody(options: GenerateOptions<string>, connection: ChatConnectionOptions, hint: AgentHintWire | undefined) {
   const info = modelInfo(connection, options.provider, options.model)
   const effort = String(options.reasoningEffort ?? info.reasoning!.defaultEffort)
   if (!info.reasoning!.efforts.some(e => String(e.id) === effort)) throw new LlmError(`Unsupported reasoning effort: ${effort}`, 'INVALID_REQUEST')
@@ -315,8 +321,8 @@ export class ChatCompletionsAdapter<C extends ChatConnectionOptions = ChatConnec
     const connection = this.dependencies.options()
     return { model: modelInfo(connection, provider, model), stream: options => this.generate(options, connection) }
   }
-  override stream(options: GenerateOptions): AsyncIterable<StreamChunk> { return this.generate(options, this.dependencies.options()) }
-  private async *generate(options: GenerateOptions, connection: C): AsyncGenerator<StreamChunk> {
+  override stream(options: GenerateOptions<string>): AsyncIterable<StreamChunk> { return this.generate(options, this.dependencies.options()) }
+  private async *generate(options: GenerateOptions<string>, connection: C): AsyncGenerator<StreamChunk> {
     const consumer = new AbortController(), bridge = this.dependencies.bridge
     const signals = [consumer.signal, options.signal, bridge?.signal, this.dependencies.signal].filter((v): v is AbortSignal => v !== undefined)
     const watchdog = idleWatchdog(AbortSignal.any(signals), connection.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS, 'CHAT_IDLE')
@@ -329,7 +335,7 @@ export class ChatCompletionsAdapter<C extends ChatConnectionOptions = ChatConnec
       throw new LlmError('Chat transport failed', 'TRANSPORT', { cause: error })
     } finally { consumer.abort(); watchdog[Symbol.dispose](); await iterator.return(undefined).catch(() => undefined) }
   }
-  private async *request(options: GenerateOptions, connection: C, signal: AbortSignal, activity: () => void): AsyncGenerator<StreamChunk> {
+  private async *request(options: GenerateOptions<string>, connection: C, signal: AbortSignal, activity: () => void): AsyncGenerator<StreamChunk> {
     signal.throwIfAborted()
     const facts: ChatRequestFacts = { sessionId: options.sessionId === undefined ? undefined : String(options.sessionId), purpose: options.purpose, model: options.model, signal }
     const release = options.purpose === undefined ? await this.dependencies.bridge?.beginOrdinary(options.sessionId, options.model, signal) : undefined

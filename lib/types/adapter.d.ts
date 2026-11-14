@@ -8,6 +8,6 @@ export declare class AgentHintAdapter<C extends DeepSeekConnectionOptions> exten
     private readonly lifetime?;
     constructor(dependencies: DeepSeekAdapterOptions<C>, bridge?: LifecycleBridge | undefined, lifetime?: AbortSignal | undefined);
     prepareCall(provider: string, model: string, signal?: AbortSignal): Promise<PreparedAdapterCall>;
-    stream(options: GenerateOptions): AsyncIterable<StreamChunk>;
+    stream(options: GenerateOptions<string>): AsyncIterable<StreamChunk>;
     private leased;
 }

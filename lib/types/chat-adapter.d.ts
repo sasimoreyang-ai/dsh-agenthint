@@ -15,7 +15,13 @@ export interface ChatConnectionOptions {
 }
 export interface ChatRequestFacts {
     sessionId: string | undefined;
-    purpose: GenerateOptions['purpose'];
+    /**
+     * Declared request purpose, or `undefined` for an ordinary conversation request.
+     * DSH 0.2.2 made purposes an open, declaration-merged key set
+     * (`GenerateOptions<Purpose extends string>`), so a forwarding adapter must treat
+     * this as a plain string rather than the old `'compaction' | 'session-title'` union.
+     */
+    purpose: string | undefined;
     model: string;
     signal: AbortSignal;
 }
@@ -47,7 +53,7 @@ export declare class ChatCompletionsAdapter<C extends ChatConnectionOptions = Ch
     listModels(provider: string): Promise<readonly LlmModelInfo[]>;
     resolveModel(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo>;
     prepareCall(provider: string, model: string, signal?: AbortSignal): Promise<PreparedAdapterCall>;
-    stream(options: GenerateOptions): AsyncIterable<StreamChunk>;
+    stream(options: GenerateOptions<string>): AsyncIterable<StreamChunk>;
     private generate;
     private request;
 }

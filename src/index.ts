@@ -28,7 +28,7 @@ import { AgentHintAdapter } from './adapter.ts'
 import { ChatCompletionsAdapter, chatCompletionsURL } from './chat-adapter.ts'
 import { buildAgentHint } from './agent-hint.ts'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { readInheritedConnection } from './inherited-connection.ts'
+import { readInheritedConnection, INHERIT_SOURCE_ID } from './inherited-connection.ts'
 import { DEFAULT_CONTROL_RETRIES, DEFAULT_CONTROL_TIMEOUT_MS, SessionControlClient } from './control-client.ts'
 import { agentHintPrepareExtensions } from './extension.ts'
 import { DEFAULT_PENDING_OP_AWAIT_MS, DEFAULT_QUARANTINE_TTL_MS, LifecycleBridge } from './lifecycle-bridge.ts'
@@ -45,7 +45,7 @@ export { DEFAULT_CONTROL_RETRIES, DEFAULT_CONTROL_TIMEOUT_MS, SessionControlClie
 export type { ControlResult, ControlConnection, ControlWarnSink, SessionControlClientOptions } from './control-client.ts'
 export { agentHintPrepareExtensions } from './extension.ts'
 export type { AgentHintExtensionOptions } from './extension.ts'
-export { ControlBarrierError, DEFAULT_PENDING_OP_AWAIT_MS, DEFAULT_QUARANTINE_TTL_MS, LifecycleBridge } from './lifecycle-bridge.ts'
+export { ControlBarrierError, COMPACTION_LINEAGE_WINDOW_MS, DEFAULT_PENDING_OP_AWAIT_MS, DEFAULT_QUARANTINE_TTL_MS, LifecycleBridge } from './lifecycle-bridge.ts'
 export type { BridgeWarnSink, LifecycleBridgeOptions } from './lifecycle-bridge.ts'
 export type { AgentHintCacheControl, AgentHintWire, SessionControlVerb } from './types.ts'
 
@@ -153,6 +153,10 @@ export function apply(ctx: Context, config: Config): void {
     prepareHint: request => {
       if (!hintEnabled) return undefined
       const id = request.sessionId === undefined ? undefined : SessionId(request.sessionId)
+      // Without a control plane there is no lineage tracking at all, so this fallback never
+      // reports a parent session. With a bridge, newer DSH no longer persists an ordinary
+      // fork's parent: `LifecycleBridge` supplies it from `origin` plus a heuristic
+      // attribution after an observed `compaction/end` (see `compactionParentOf`).
       const facts = bridge?.facts(id) ?? { seeded: false, firstOrdinarySent: true, parentSessionId: undefined }
       return buildAgentHint({ sessionId: request.sessionId, purpose: request.purpose,
         parentSessionId: facts.parentSessionId, cacheControl,
@@ -195,6 +199,14 @@ export function apply(ctx: Context, config: Config): void {
   ctx.on('loader/volatile-update', refresh, { global: true })
   ctx.on('loader/config-update', refresh, { global: true })
   ctx.on('loader/entry-init', refresh, { global: true })
+  // 0.2.2 additionally announces a catalog change on the route itself, which is the
+  // narrowest signal for an inherited `models`/`baseURL` edit. It is an addition, not a
+  // replacement: the loader/`internal/status` path below stays as the fallback so a host
+  // that never emits it still refreshes.
+  ctx.on('llm/models-updated', provider => {
+    if (provider !== INHERIT_SOURCE_ID) return
+    try { refresh() } catch (error) { ctx.logger.warn('agent-hint: source refresh failed', error) }
+  }, { global: true })
   // Entry creation precedes activation. Refresh after a source reaches/leaves
   // active state too, including disable, removal and re-addition.
   let disposed = false

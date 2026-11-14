@@ -15,7 +15,11 @@ import type { AgentHintCacheControl, AgentHintWire, SessionControlVerb } from '.
 export interface AgentHintInputs {
   /** Session identity of the request; `undefined` requests stay unprefixed. */
   sessionId: string | undefined
-  /** Call purpose; every defined purpose skips injection. */
+  /**
+   * Call purpose, or `undefined` for an ordinary conversation request. DSH treats
+   * purposes as an open key set declared by their producer packages, so any
+   * defined purpose is a background call and no purpose name is special-cased.
+   */
   purpose: DeepSeekLlmApiExtensionRequest['purpose']
   /** Identity of the compacted-away parent session, when one is known. */
   parentSessionId?: string | undefined
@@ -33,8 +37,10 @@ export interface AgentHintInputs {
  * Build the `agent_hint` field for one request, or `undefined` when the
  * request must stay unprefixed. Rules, in order:
  *
- * 1. Defined purposes (compaction, session-title) are background calls
- *    that must not perturb the live session's KV-cache identity.
+ * 1. Any defined purpose is a background call that must not perturb the live
+ *    session's KV-cache identity, so no hint is injected at all. DSH no longer
+ *    enumerates purposes (`compaction`, `session-title`, …) in a closed union:
+ *    producer packages declare them, so every name is treated the same way.
  * 2. A request without a session identity cannot prefix anything.
  * 3. An explicit piggyback verb wins over the `start` rule.
  * 4. Otherwise the first ordinary request of a fresh session declares

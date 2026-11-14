@@ -19,7 +19,13 @@ export function readInheritedConnection(ctx: Context, sourceId = INHERIT_SOURCE_
     if (entries.length !== 1) return {}
     const fiber = entries[0]?.fiber
     if (fiber?.state !== 2) return {}
-    options = plainOptions(fiber.config)
+    // cordis >= 4.1 exposes the schema-validated config (defaults materialized) as
+    // `effectiveConfig`; `fiber.config` is only the raw loader input, so reading it
+    // here would hand the resolver unresolved/expression-bearing values. The property
+    // is typed `unknown`, so narrow it to the parsed Config shape this resolver expects.
+    const effective: unknown = fiber.effectiveConfig
+    if (effective === null || typeof effective !== 'object') return {}
+    options = plainOptions(effective as Parameters<typeof plainOptions>[0])
   } else {
     // Hosts exposing only ConfigEditor still use the public protocol defaults.
     const editor = ctx.get('configEditor')
