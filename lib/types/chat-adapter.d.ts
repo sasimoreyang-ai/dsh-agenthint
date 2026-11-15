@@ -4,6 +4,7 @@ import type { GenerateOptions, LlmModelInfo, LlmResolvedModelInfo, PreparedAdapt
 import type { DeepSeekConnectionOptions } from '@deepseek-ai/dsh-llm-deepseek';
 import type { AgentHintWire } from './types.ts';
 import type { LifecycleBridge } from './lifecycle-bridge.ts';
+import type { HintTrace } from './trace.ts';
 export interface ChatConnectionOptions {
     baseURL: string;
     maxTokens?: number;
@@ -37,6 +38,7 @@ export interface ChatAdapterDependencies<C extends ChatConnectionOptions = ChatC
     bridge?: LifecycleBridge;
     /** Plugin lifetime, including when lifecycle controls are disabled. */
     signal?: AbortSignal;
+    trace?: HintTrace;
     /** Kept for consumers constructing this adapter directly. */
     discoverModels?(provider: string): readonly LlmModelInfo[] | Promise<readonly LlmModelInfo[]>;
 }

@@ -1,6 +1,7 @@
 /** Bounded advisory control transport. HTTP acceptance is not KV completion. */
 import { attributionHeaders } from '@deepseek-ai/dsh-llm'
 import type { SessionControlVerb } from './types.ts'
+import type { HintTrace, HintTraceAttempt } from './trace.ts'
 
 export type ControlResult =
   | { status: 'accepted'; httpStatus: number }
@@ -22,6 +23,7 @@ export interface SessionControlClientOptions {
   timeoutMs: number
   retries: number
   warn?: ControlWarnSink
+  trace?: HintTrace
 }
 export const DEFAULT_CONTROL_TIMEOUT_MS = 5_000
 export const DEFAULT_CONTROL_RETRIES = 1
@@ -53,11 +55,16 @@ export class SessionControlClient {
   async send(verb: SessionControlVerb, sessionId: string, model?: string, signal?: AbortSignal,
     canSend: () => boolean = () => true): Promise<ControlResult> {
     const cancelled = (): ControlResult => ({ status: 'cancelled', dispatched: false })
-    if (signal?.aborted || !canSend()) return cancelled()
     if (verb === 'start') {
+      if (signal?.aborted || !canSend()) return cancelled()
       this.options.warn?.('llm-agent-hint: start must ride an ordinary request')
       return { status: 'failed', retryable: false }
     }
+    const hint = { session_id: sessionId, session_control: { type: verb } }
+    const facts = { plane: 'control' as const, transport: 'chat' as const, model: model ?? this.options.model, hint }
+    let observation = this.options.trace?.begin(facts, 'prepared')
+    const cancel = () => { observation?.finish('cancelled', { dispatched: false }); return cancelled() }
+    if (signal?.aborted || !canSend()) return cancel()
     let connection: ControlConnection
     try {
       const timeout = AbortSignal.timeout(this.options.timeoutMs)
@@ -66,16 +73,19 @@ export class SessionControlClient {
         : this.options.resolveConnection()
       connection = await abortable(resolving, signal === undefined ? timeout : AbortSignal.any([signal, timeout]))
     } catch (error) {
-      if (signal?.aborted) return cancelled()
+      if (signal?.aborted) return cancel()
+      observation?.finish('not-dispatched', { dispatched: false })
       this.options.warn?.('llm-agent-hint: control connection resolution failed', error)
       return { status: 'failed', retryable: false }
     }
-    if (signal?.aborted || !canSend()) return cancelled()
+    if (signal?.aborted || !canSend()) return cancel()
     const body = JSON.stringify({ model: model ?? this.options.model, messages: [], stream: false,
-      agent_hint: { session_id: sessionId, session_control: { type: verb } } })
+      agent_hint: hint })
     for (let attempt = 0; ; attempt++) {
-      if (signal?.aborted || !canSend()) return cancelled()
-      const result = await this.attempt(body, verb, connection, signal)
+      if (attempt > 0) observation = this.options.trace?.begin({ ...facts,
+        ...observation?.requestId === undefined ? {} : { requestId: observation.requestId }, attempt: attempt + 1 }, 'prepared')
+      if (signal?.aborted || !canSend()) return cancel()
+      const result = await this.attempt(body, verb, connection, signal, observation)
       if (result.status !== 'accepted') this.options.warn?.(
         `llm-agent-hint: session_control ${verb} for ${sessionId}: ${result.status}`
         + ('httpStatus' in result ? ` HTTP ${result.httpStatus}` : ''))
@@ -88,27 +98,34 @@ export class SessionControlClient {
   }
 
   private async attempt(body: string, verb: SessionControlVerb,
-    connection: ControlConnection, signal?: AbortSignal): Promise<ControlResult> {
+    connection: ControlConnection, signal?: AbortSignal, observation?: HintTraceAttempt): Promise<ControlResult> {
     const timeout = AbortSignal.timeout(this.options.timeoutMs)
+    let httpStatus: number | undefined
     try {
       const key = connection.apiKey
       const header = connection.authHeader ?? 'authorization'
+      observation?.dispatch()
       const response = await fetch(connection.endpoint, {
         method: 'POST', redirect: 'error',
         headers: { ...key === undefined ? {} : { [header]: header === 'authorization' ? `Bearer ${key}` : key },
           'content-type': 'application/json', ...attributionHeaders() },
         body, signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
       })
+      httpStatus = response.status
       if (!response.ok) {
-        await response.body?.cancel().catch(() => undefined)
         const transient = response.status === 408 || response.status === 429 || response.status >= 500
+        observation?.finish(verb !== 'resume' && transient ? 'unknown' : 'rejected', { httpStatus, dispatched: true })
+        await response.body?.cancel().catch(() => undefined)
         if (verb !== 'resume' && transient) return { status: 'unknown' }
         return { status: 'failed', retryable: transient, httpStatus: response.status }
       }
       // Drain before returning; interrupted bodies retain an unknown outcome.
       await response.arrayBuffer()
+      observation?.finish('accepted', { httpStatus, dispatched: true })
       return { status: 'accepted', httpStatus: response.status }
     } catch {
+      observation?.finish(signal?.aborted ? 'cancelled' : 'unknown', {
+        dispatched: true, ...httpStatus === undefined ? {} : { httpStatus } })
       return signal?.aborted ? { status: 'cancelled', dispatched: true } : { status: 'unknown' }
     }
   }

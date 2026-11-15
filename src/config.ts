@@ -56,6 +56,8 @@ export interface SessionControlConfig {
 export interface AgentHintConfig {
   /** Master switch; false retains the selected transport without hints/controls. */
   enabled: boolean
+  /** Bounded, content-free Host trace and a separate Web download. */
+  trace?: { enabled: boolean; maxRecords: number }
   /** Static coordinator cache policy copied verbatim into every hint. */
   cacheControl?: AgentHintCacheControl | undefined
   /** Session lifecycle control plane. */
@@ -91,6 +93,10 @@ export const Config = z.object({
   transport: z.union(['chat', 'messages']).default('chat'),
   agentHint: z.object({
     enabled: z.boolean().default(true),
+    trace: z.object({
+      enabled: z.boolean().default(true),
+      maxRecords: z.number().step(1).min(1).max(10_000).default(2000),
+    }),
     // `z.object` implicitly defaults to `{}`, which would cascade a missing
     // `cacheControl` into existence and trip the inner required `type`. The
     // explicit `default(undefined)` keeps the whole block optional: absent

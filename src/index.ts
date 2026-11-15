@@ -34,6 +34,8 @@ import { agentHintPrepareExtensions } from './extension.ts'
 import { DEFAULT_PENDING_OP_AWAIT_MS, DEFAULT_QUARANTINE_TTL_MS, LifecycleBridge } from './lifecycle-bridge.ts'
 import { observeArchives } from './archive-observer.ts'
 import { AgentHintSignals } from './composing-service.ts'
+import { HintTrace } from './trace.ts'
+import { AgentHintTraceService } from './trace-service.ts'
 import type {} from '@deepseek-ai/dsh-api-gateway'
 
 export { buildAgentHint } from './agent-hint.ts'
@@ -48,6 +50,8 @@ export type { AgentHintExtensionOptions } from './extension.ts'
 export { ControlBarrierError, COMPACTION_LINEAGE_WINDOW_MS, DEFAULT_PENDING_OP_AWAIT_MS, DEFAULT_QUARANTINE_TTL_MS, LifecycleBridge } from './lifecycle-bridge.ts'
 export type { BridgeWarnSink, LifecycleBridgeOptions } from './lifecycle-bridge.ts'
 export type { AgentHintCacheControl, AgentHintWire, SessionControlVerb } from './types.ts'
+export { HintTrace } from './trace.ts'
+export type { HintTraceRecord, HintTraceSnapshot } from './trace-record.ts'
 
 export const name = 'llm-agent-hint'
 export const inject = ['llm']
@@ -82,6 +86,14 @@ export function apply(ctx: Context, config: Config): void {
   const hintEnabled = config.agentHint?.enabled !== false
   const sessionControl = config.agentHint?.sessionControl
   const controlEnabled = hintEnabled && sessionControl?.enabled !== false
+  const trace = new HintTrace({ enabled: config.agentHint?.trace?.enabled !== false,
+    maxRecords: config.agentHint?.trace?.maxRecords ?? 2000,
+    // Stock Web may suppress info-level framework logs. Explicit stdout keeps
+    // this diagnostic channel available to Docker / service log collection.
+    log: record => console.info(`agent-hint/trace ${JSON.stringify(record)}`) })
+  if (config.agentHint?.trace?.enabled !== false) {
+    ctx.inject(['typertGateway'], scope => { scope.plugin(AgentHintTraceService, trace) })
+  }
   const bridge = controlEnabled
     ? new LifecycleBridge({
       client: new SessionControlClient({
@@ -102,6 +114,7 @@ export function apply(ctx: Context, config: Config): void {
         model: options().models[0]?.id ?? 'default',
         timeoutMs: sessionControl?.controlTimeoutMs ?? DEFAULT_CONTROL_TIMEOUT_MS,
         retries: sessionControl?.retries ?? DEFAULT_CONTROL_RETRIES,
+        trace,
         warn: (message, error) => {
           ctx.logger.warn(message)
           if (error !== undefined) ctx.logger.warn(error)
@@ -150,6 +163,7 @@ export function apply(ctx: Context, config: Config): void {
     resolveAuth: authForConnection,
     bridge,
     signal: lifetime.signal,
+    trace,
     prepareHint: request => {
       if (!hintEnabled) return undefined
       const id = request.sessionId === undefined ? undefined : SessionId(request.sessionId)
@@ -179,6 +193,7 @@ export function apply(ctx: Context, config: Config): void {
       ? agentHintPrepareExtensions({
           chained,
           streamLease: true,
+          trace,
           ...bridge === undefined ? {} : { bridge },
           ...cacheControl === undefined ? {} : { cacheControl },
         })

@@ -8,6 +8,7 @@ import type { DeepSeekConnectionOptions } from '@deepseek-ai/dsh-llm-deepseek'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import type { AgentHintWire } from './types.ts'
 import type { LifecycleBridge } from './lifecycle-bridge.ts'
+import type { HintTrace, HintTraceAttempt } from './trace.ts'
 
 export interface ChatConnectionOptions {
   baseURL: string
@@ -40,6 +41,7 @@ export interface ChatAdapterDependencies<C extends ChatConnectionOptions = ChatC
   bridge?: LifecycleBridge
   /** Plugin lifetime, including when lifecycle controls are disabled. */
   signal?: AbortSignal
+  trace?: HintTrace
   /** Kept for consumers constructing this adapter directly. */
   discoverModels?(provider: string): readonly LlmModelInfo[] | Promise<readonly LlmModelInfo[]>
 }
@@ -339,13 +341,21 @@ export class ChatCompletionsAdapter<C extends ChatConnectionOptions = ChatConnec
     signal.throwIfAborted()
     const facts: ChatRequestFacts = { sessionId: options.sessionId === undefined ? undefined : String(options.sessionId), purpose: options.purpose, model: options.model, signal }
     const release = options.purpose === undefined ? await this.dependencies.bridge?.beginOrdinary(options.sessionId, options.model, signal) : undefined
+    let observation: HintTraceAttempt | undefined
+    let dispatched = false
     try {
       const hint = await abortable(Promise.resolve(this.dependencies.prepareHint?.(facts)), signal)
       const body = buildBody(options, connection, hint)
+      if (hint !== undefined) observation = this.dependencies.trace?.begin({
+        plane: 'data', transport: 'chat', model: options.model, hint }, 'prepared')
       const auth = await abortable(this.dependencies.resolveAuth(connection), signal)
       signal.throwIfAborted()
+      const payload = JSON.stringify(body)
+      observation?.dispatch()
+      dispatched = true
       const response = await fetch(chatCompletionsURL(connection.baseURL), { method: 'POST', redirect: 'error', signal,
-        headers: { ...attributionHeaders(), 'content-type': 'application/json', accept: 'text/event-stream', ...auth.headers }, body: JSON.stringify(body) })
+        headers: { ...attributionHeaders(), 'content-type': 'application/json', accept: 'text/event-stream', ...auth.headers }, body: payload })
+      observation?.finish(response.ok ? 'accepted' : 'rejected', { httpStatus: response.status, dispatched: true })
       try {
         if (!response.ok) {
           const text = await abortable(response.text(), signal)
@@ -355,6 +365,10 @@ export class ChatCompletionsAdapter<C extends ChatConnectionOptions = ChatConnec
         if (options.purpose === undefined) this.dependencies.onAccepted?.(facts)
         yield* translate(sseEvents(response, signal, activity))
       } finally { await response.body?.cancel().catch(() => undefined) }
+    } catch (error) {
+      observation?.finish(!dispatched ? (signal.aborted ? 'cancelled' : 'not-dispatched')
+        : signal.aborted ? 'cancelled' : 'unknown', { dispatched })
+      throw error
     } finally { release?.() }
   }
 }

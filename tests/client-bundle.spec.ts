@@ -37,7 +37,10 @@ async function fixture(answer: () => Reply | Promise<Reply> = () => ({ ok: true,
   await ctx.plugin(renderer!.factory(createRequire(import.meta.url)).SlotRegistry)
   ctx.slots.register({ name: 'root', children: { 'conversation.input.overlay': { kind: 'list', scope: 'session' } } } as never, () => null)
   const fiber = await ctx.plugin(face)
-  return { ctx, calls, fiber, listeners, entries: () => ctx.slots.entries('conversation.input.overlay'),
+  // Composer assertions stay scoped to composer traffic; trace independently
+  // probes its own read-only capability on the same Connection generation.
+  return { ctx, get calls() { return calls.filter(call => String(call[1]).startsWith('agentHintSignals/')) },
+    allCalls: calls, fiber, listeners, entries: () => ctx.slots.entries('conversation.input.overlay'),
     publish: (id?: number) => { generation = id === undefined ? undefined : { id }; for (const fn of [...listeners]) fn() } }
 }
 const tick = () => new Promise(resolve => setImmediate(resolve))
@@ -51,6 +54,7 @@ describe('shipped browser factory on stock connection services', () => {
       f.publish(1)
       await vi.waitFor(() => expect(f.entries()).toHaveLength(1))
       expect(f.calls[0].slice(0, 3)).toEqual(['/api', 'agentHintSignals/available', { args: {} }])
+      expect(f.allCalls.filter(call => call[1] === 'agentHintTrace/available')).toHaveLength(1)
       const entry = f.entries()[0], component = entry.component as React.ComponentType<any>
       let draft = ''; const dom = composerDom()
       const props = { sessionId: 'private-session', useInput: (select: (s: { draft: string }) => unknown) => select({ draft }), ...entry.inject!() }

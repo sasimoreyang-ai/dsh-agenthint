@@ -29,6 +29,8 @@ export type { AgentHintExtensionOptions } from './extension.ts';
 export { ControlBarrierError, COMPACTION_LINEAGE_WINDOW_MS, DEFAULT_PENDING_OP_AWAIT_MS, DEFAULT_QUARANTINE_TTL_MS, LifecycleBridge } from './lifecycle-bridge.ts';
 export type { BridgeWarnSink, LifecycleBridgeOptions } from './lifecycle-bridge.ts';
 export type { AgentHintCacheControl, AgentHintWire, SessionControlVerb } from './types.ts';
+export { HintTrace } from './trace.ts';
+export type { HintTraceRecord, HintTraceSnapshot } from './trace-record.ts';
 export declare const name = "llm-agent-hint";
 export declare const inject: string[];
 export declare function apply(ctx: Context, config: Config): void;

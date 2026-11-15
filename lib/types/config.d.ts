@@ -47,6 +47,11 @@ export interface SessionControlConfig {
 export interface AgentHintConfig {
     /** Master switch; false retains the selected transport without hints/controls. */
     enabled: boolean;
+    /** Bounded, content-free Host trace and a separate Web download. */
+    trace?: {
+        enabled: boolean;
+        maxRecords: number;
+    };
     /** Static coordinator cache policy copied verbatim into every hint. */
     cacheControl?: AgentHintCacheControl | undefined;
     /** Session lifecycle control plane. */
@@ -71,9 +76,16 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     apiKeyEnv: z<string, string, "volatile">;
     inheritCredentials: z<boolean, boolean, "defined">;
     provider: z<string, string, "defined">;
-    transport: z<"messages" | "chat", "messages" | "chat", "defined">;
+    transport: z<"chat" | "messages", "chat" | "messages", "defined">;
     agentHint: z<Schemastery.ObjectS<NoInfer<{
         enabled: z<boolean, boolean, "defined">;
+        trace: z<Schemastery.ObjectS<NoInfer<{
+            enabled: z<boolean, boolean, "defined">;
+            maxRecords: z<number, number, "defined">;
+        }>>, Schemastery.ObjectT<NoInfer<{
+            enabled: z<boolean, boolean, "defined">;
+            maxRecords: z<number, number, "defined">;
+        }>>, "plain">;
         cacheControl: z<Schemastery.ObjectS<NoInfer<{
             type: z<string, string, "defined">;
         }>>, Schemastery.ObjectT<NoInfer<{
@@ -96,6 +108,13 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         }>>, "plain">;
     }>>, Schemastery.ObjectT<NoInfer<{
         enabled: z<boolean, boolean, "defined">;
+        trace: z<Schemastery.ObjectS<NoInfer<{
+            enabled: z<boolean, boolean, "defined">;
+            maxRecords: z<number, number, "defined">;
+        }>>, Schemastery.ObjectT<NoInfer<{
+            enabled: z<boolean, boolean, "defined">;
+            maxRecords: z<number, number, "defined">;
+        }>>, "plain">;
         cacheControl: z<Schemastery.ObjectS<NoInfer<{
             type: z<string, string, "defined">;
         }>>, Schemastery.ObjectT<NoInfer<{
@@ -139,9 +158,16 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     apiKeyEnv: z<string, string, "volatile">;
     inheritCredentials: z<boolean, boolean, "defined">;
     provider: z<string, string, "defined">;
-    transport: z<"messages" | "chat", "messages" | "chat", "defined">;
+    transport: z<"chat" | "messages", "chat" | "messages", "defined">;
     agentHint: z<Schemastery.ObjectS<NoInfer<{
         enabled: z<boolean, boolean, "defined">;
+        trace: z<Schemastery.ObjectS<NoInfer<{
+            enabled: z<boolean, boolean, "defined">;
+            maxRecords: z<number, number, "defined">;
+        }>>, Schemastery.ObjectT<NoInfer<{
+            enabled: z<boolean, boolean, "defined">;
+            maxRecords: z<number, number, "defined">;
+        }>>, "plain">;
         cacheControl: z<Schemastery.ObjectS<NoInfer<{
             type: z<string, string, "defined">;
         }>>, Schemastery.ObjectT<NoInfer<{
@@ -164,6 +190,13 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         }>>, "plain">;
     }>>, Schemastery.ObjectT<NoInfer<{
         enabled: z<boolean, boolean, "defined">;
+        trace: z<Schemastery.ObjectS<NoInfer<{
+            enabled: z<boolean, boolean, "defined">;
+            maxRecords: z<number, number, "defined">;
+        }>>, Schemastery.ObjectT<NoInfer<{
+            enabled: z<boolean, boolean, "defined">;
+            maxRecords: z<number, number, "defined">;
+        }>>, "plain">;
         cacheControl: z<Schemastery.ObjectS<NoInfer<{
             type: z<string, string, "defined">;
         }>>, Schemastery.ObjectT<NoInfer<{
