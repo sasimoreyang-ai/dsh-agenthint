@@ -4,4 +4,4 @@
 
 ## Hint trace
 
-默认开启适配器 Hint trace，并提供独立的 Web 会话下载按钮。配置、保留范围与 HTTP 接受/引擎执行的区别见 [Hint trace](docs/trace.md)。
+默认开启适配器 Hint trace。记录同时写入**原 DSH 会话日志**（`session.v4.jsonl`，每次 attempt 一条终态记录）与**服务端 stdout**（含中间态），并提供合并两个来源、标注来源与去重规则的 Web 会话下载。会话日志使用 DSH 0.2.2 的 `appendPluginRecord` 通道（记录 `ignorable`、不进模型可见 surface、随 fork/resume 携带），该 API 文档限定实验包使用，属于已知取舍。`agentHint.trace.writeToSession: false` 可只保留 stdout 与进程内窗口。详见 [Hint trace](docs/trace.md)。

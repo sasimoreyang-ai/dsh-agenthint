@@ -48,4 +48,6 @@ See the [2026-10-29 fix and verification notes](docs/release-correctness-2026102
 
 ## Hint trace
 
-Adapter Hint tracing is enabled by default, with a separate per-session Web download. See [Hint trace](docs/trace.md) for configuration, bounded retention, and the distinction between HTTP acceptance and engine execution.
+Adapter Hint tracing is enabled by default. Records go to **both** the original DSH Session log (`session.v4.jsonl`, next to the session events; one terminal record per attempt) and server stdout (every phase), plus a separate per-session Web download that merges the process window with the Session log and labels both sources.
+
+The Session-log half uses the DSH 0.2.2 `appendPluginRecord` channel: records are marked `ignorable`, never enter the model-visible surface, and travel with fork/resume. That API is documented as experimental-package-only, which is a known trade-off to re-confirm on every host upgrade. Set `agentHint.trace.writeToSession: false` to keep stdout and the window only. See [Hint trace](docs/trace.md) for configuration, throttling, read-side validation and corrupted-record handling.
