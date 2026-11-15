@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import Llm from '@deepseek-ai/dsh-llm'
+import SessionStore, { Session, SessionId, appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-session'
 import { Config } from '../lib/types/config.js'
 import { HintTrace } from '../lib/types/trace.js'
 import { SessionControlClient } from '../lib/types/control-client.js'
@@ -23,8 +24,9 @@ const client = (trace, options = {}) => new SessionControlClient({
 })
 
 test('trace config defaults on, can be disabled and bounds memory', () => {
-  assert.deepEqual(Config({}).agentHint.trace, { enabled: true, maxRecords: 2000 })
+  assert.deepEqual(Config({}).agentHint.trace, { enabled: true, maxRecords: 2000, writeToSession: true })
   assert.equal(Config({ agentHint: { trace: { enabled: false } } }).agentHint.trace.enabled, false)
+  assert.equal(Config({ agentHint: { trace: { writeToSession: false } } }).agentHint.trace.writeToSession, false)
   for (const maxRecords of [0, -1, 10_001, 1.2]) {
     assert.throws(() => Config({ agentHint: { trace: { maxRecords } } }))
     assert.throws(() => new HintTrace({ maxRecords }))
@@ -222,7 +224,7 @@ test('read-only export validates input and filters other sessions without creati
   trace.begin({ ...facts, hint: { session_id: 'another' } })
   const ctx = new Context()
   try {
-    const service = new AgentHintTraceService(ctx, trace)
+    const service = new AgentHintTraceService(ctx, { trace })
     assert.equal(service.available(), true)
     assert.equal(service.snapshot({ sessionId: session }).records.length, 1)
     assert.equal(service.snapshot({ sessionId: 'missing' }).records.length, 0)
@@ -230,6 +232,132 @@ test('read-only export validates input and filters other sessions without creati
       assert.throws(() => service.snapshot(invalid))
     }
   } finally { await ctx.fiber.dispose() }
+})
+
+test('export merges the process window with the Session log and labels both sources', async () => {
+  const ctx = new Context()
+  try {
+    const target = Session.create(SessionId(session))
+    const trace = new HintTrace()
+    trace.begin({ ...facts, hint: { session_id: session } }).finish('accepted', { httpStatus: 200 })
+    // A record only the durable log holds, as an earlier process would leave it.
+    appendPluginRecord(target, plugin.HINT_TRACE_RECORD_TYPE, {
+      schemaVersion: 1, requestId: 'durable-only', time: '2026-10-30T00:00:00.000Z', sessionId: session,
+      plane: 'data', transport: 'chat', model: 'fixture-model', attempt: 1, phase: 'result',
+      outcome: 'accepted', httpStatus: 200, durationMs: 1, dispatched: true,
+      hint: { session_id: session },
+    })
+    const service = new AgentHintTraceService(ctx, { trace, resolveSession: id => id === session ? target : undefined })
+    const snapshot = service.snapshot({ sessionId: session })
+    assert.equal(snapshot.schemaVersion, 2)
+    // Window order is kept for the attempt; the log-only record sorts first by time.
+    const attemptId = trace.snapshot(session).records[0].requestId
+    assert.deepEqual(snapshot.records.map(row => [row.requestId, row.phase]), [
+      ['durable-only', 'result'], [attemptId, 'dispatch'], [attemptId, 'result'],
+    ])
+    assert.deepEqual(snapshot.sources, {
+      processWindow: { retention: 'process-local', records: 2 },
+      sessionLog: { retention: 'session-log', recordType: plugin.HINT_TRACE_RECORD_TYPE,
+        read: true, records: 1, invalidRecords: 0 },
+      dedupe: 'requestId+phase+attempt+time',
+    })
+    assert.equal('retention' in snapshot, false)
+  } finally { await ctx.fiber.dispose() }
+})
+
+test('a corrupted Session log record is skipped and counted, never thrown', async () => {
+  const ctx = new Context()
+  try {
+    const target = Session.create(SessionId(session))
+    appendPluginRecord(target, plugin.HINT_TRACE_RECORD_TYPE, null)
+    appendPluginRecord(target, plugin.HINT_TRACE_RECORD_TYPE, { schemaVersion: 7, requestId: 'stale' })
+    const service = new AgentHintTraceService(ctx, { trace: new HintTrace(), resolveSession: () => target })
+    const snapshot = service.snapshot({ sessionId: session })
+    assert.deepEqual(snapshot.records, [])
+    assert.equal(snapshot.sources.sessionLog.invalidRecords, 2)
+    assert.equal(snapshot.sources.sessionLog.read, true)
+  } finally { await ctx.fiber.dispose() }
+})
+
+test('real plugin wiring appends exactly one terminal record per attempt to the Session log', async t => {
+  let bridge
+  const subscribe = LifecycleBridge.prototype.subscribe
+  t.mock.method(LifecycleBridge.prototype, 'subscribe', function (ctx) { bridge = this; return subscribe.call(this, ctx) })
+  t.mock.method(globalThis, 'fetch', async () => new Response('{}'))
+  const ctx = new Context()
+  const logs = []
+  const logger = t.mock.method(console, 'info', (...args) => logs.push(args.join(' ')))
+  try {
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(Llm)
+    await ctx.plugin(plugin, { baseURL: 'http://fixture.invalid', agentHint: { sessionControl: { pluginTriggers: false } } })
+    const target = ctx.sessions.create(SessionId(session))
+    bridge.noteOrdinaryRequest(session, 'fixture-model')
+    bridge.onSessionArchived(session)
+    await bridge.awaitPendingOp(session)
+    const rows = logs.filter(row => row.startsWith('agent-hint/trace '))
+      .map(row => JSON.parse(row.slice('agent-hint/trace '.length)))
+      .filter(row => row.hint.session_control?.type === 'stop')
+    // stdout keeps every phase of the attempt.
+    assert.deepEqual(rows.map(row => row.phase), ['prepared', 'dispatch', 'result'])
+    // The durable log keeps exactly the terminal record, and nothing else entered the surface.
+    const events = target.snapshotEvents()
+    const records = events.map(event => pluginRecordOf(event)).filter(Boolean)
+    assert.equal(records.length, 1)
+    assert.equal(records[0].type, plugin.HINT_TRACE_RECORD_TYPE)
+    assert.equal(records[0].data.phase, 'result')
+    assert.equal(records[0].data.outcome, 'accepted')
+    assert.equal(records[0].data.requestId, rows[2].requestId)
+    assert.equal(events.length, 1)
+    assert.equal(target.surface.nodes.length, 0)
+    assert.deepEqual(target.deriveMessages(), [])
+  } finally { logger.mock.restore(); await ctx.fiber.dispose() }
+})
+
+test('writeToSession: false keeps stdout while the Session log stays untouched', async t => {
+  let bridge
+  const subscribe = LifecycleBridge.prototype.subscribe
+  t.mock.method(LifecycleBridge.prototype, 'subscribe', function (ctx) { bridge = this; return subscribe.call(this, ctx) })
+  t.mock.method(globalThis, 'fetch', async () => new Response('{}'))
+  const ctx = new Context()
+  const logs = []
+  const logger = t.mock.method(console, 'info', (...args) => logs.push(args.join(' ')))
+  try {
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(Llm)
+    await ctx.plugin(plugin, { baseURL: 'http://fixture.invalid', agentHint: {
+      trace: { writeToSession: false }, sessionControl: { pluginTriggers: false } } })
+    const target = ctx.sessions.create(SessionId(session))
+    bridge.noteOrdinaryRequest(session, 'fixture-model')
+    bridge.onSessionArchived(session)
+    await bridge.awaitPendingOp(session)
+    const rows = logs.filter(row => row.startsWith('agent-hint/trace '))
+      .map(row => JSON.parse(row.slice('agent-hint/trace '.length)))
+      .filter(row => row.hint.session_control?.type === 'stop')
+    assert.deepEqual(rows.map(row => row.phase), ['prepared', 'dispatch', 'result'])
+    assert.equal(target.snapshotEvents().length, 0)
+  } finally { logger.mock.restore(); await ctx.fiber.dispose() }
+})
+
+test('a host without a Session store still traces to stdout only', async t => {
+  let bridge
+  const subscribe = LifecycleBridge.prototype.subscribe
+  t.mock.method(LifecycleBridge.prototype, 'subscribe', function (ctx) { bridge = this; return subscribe.call(this, ctx) })
+  t.mock.method(globalThis, 'fetch', async () => new Response('{}'))
+  const ctx = new Context()
+  const logs = []
+  const logger = t.mock.method(console, 'info', (...args) => logs.push(args.join(' ')))
+  try {
+    await ctx.plugin(Llm)
+    await ctx.plugin(plugin, { baseURL: 'http://fixture.invalid', agentHint: { sessionControl: { pluginTriggers: false } } })
+    bridge.noteOrdinaryRequest(session, 'fixture-model')
+    bridge.onSessionArchived(session)
+    await bridge.awaitPendingOp(session)
+    const rows = logs.filter(row => row.startsWith('agent-hint/trace '))
+      .map(row => JSON.parse(row.slice('agent-hint/trace '.length)))
+      .filter(row => row.hint.session_control?.type === 'stop')
+    assert.deepEqual(rows.map(row => row.phase), ['prepared', 'dispatch', 'result'])
+  } finally { logger.mock.restore(); await ctx.fiber.dispose() }
 })
 
 test('real plugin wiring forwards lifecycle records to the server log', async t => {

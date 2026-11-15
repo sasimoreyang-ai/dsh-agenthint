@@ -49,7 +49,10 @@ export function installTraceDownload(ctx: Context, connection: ConnectionHandle,
         downloadSignal.throwIfAborted()
         if (!response.ok) throw new Error('Trace download failed')
         const snapshot = response.value as HintTraceSnapshot
-        if (snapshot?.schemaVersion !== 1 || snapshot.sessionId !== sessionId || !Array.isArray(snapshot.records)) {
+        // Schema 2 merged the process window with the Session log; the payload
+        // names both sources and the dedupe rule, so a reader can tell them apart.
+        if (snapshot?.schemaVersion !== 2 || snapshot.sessionId !== sessionId || !Array.isArray(snapshot.records)
+          || typeof snapshot.sources !== 'object' || snapshot.sources === null) {
           throw new Error('Invalid trace response')
         }
         const url = URL.createObjectURL(new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' }))

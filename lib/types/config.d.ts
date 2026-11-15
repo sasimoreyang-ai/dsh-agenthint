@@ -47,10 +47,11 @@ export interface SessionControlConfig {
 export interface AgentHintConfig {
     /** Master switch; false retains the selected transport without hints/controls. */
     enabled: boolean;
-    /** Bounded, content-free Host trace and a separate Web download. */
+    /** Bounded, content-free Host trace, a separate Web download, and an optional Session-log mirror. */
     trace?: {
         enabled: boolean;
         maxRecords: number;
+        writeToSession: boolean;
     };
     /** Static coordinator cache policy copied verbatim into every hint. */
     cacheControl?: AgentHintCacheControl | undefined;
@@ -82,9 +83,11 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         trace: z<Schemastery.ObjectS<NoInfer<{
             enabled: z<boolean, boolean, "defined">;
             maxRecords: z<number, number, "defined">;
+            writeToSession: z<boolean, boolean, "defined">;
         }>>, Schemastery.ObjectT<NoInfer<{
             enabled: z<boolean, boolean, "defined">;
             maxRecords: z<number, number, "defined">;
+            writeToSession: z<boolean, boolean, "defined">;
         }>>, "plain">;
         cacheControl: z<Schemastery.ObjectS<NoInfer<{
             type: z<string, string, "defined">;
@@ -111,9 +114,11 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         trace: z<Schemastery.ObjectS<NoInfer<{
             enabled: z<boolean, boolean, "defined">;
             maxRecords: z<number, number, "defined">;
+            writeToSession: z<boolean, boolean, "defined">;
         }>>, Schemastery.ObjectT<NoInfer<{
             enabled: z<boolean, boolean, "defined">;
             maxRecords: z<number, number, "defined">;
+            writeToSession: z<boolean, boolean, "defined">;
         }>>, "plain">;
         cacheControl: z<Schemastery.ObjectS<NoInfer<{
             type: z<string, string, "defined">;
@@ -164,9 +169,11 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         trace: z<Schemastery.ObjectS<NoInfer<{
             enabled: z<boolean, boolean, "defined">;
             maxRecords: z<number, number, "defined">;
+            writeToSession: z<boolean, boolean, "defined">;
         }>>, Schemastery.ObjectT<NoInfer<{
             enabled: z<boolean, boolean, "defined">;
             maxRecords: z<number, number, "defined">;
+            writeToSession: z<boolean, boolean, "defined">;
         }>>, "plain">;
         cacheControl: z<Schemastery.ObjectS<NoInfer<{
             type: z<string, string, "defined">;
@@ -193,9 +200,11 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         trace: z<Schemastery.ObjectS<NoInfer<{
             enabled: z<boolean, boolean, "defined">;
             maxRecords: z<number, number, "defined">;
+            writeToSession: z<boolean, boolean, "defined">;
         }>>, Schemastery.ObjectT<NoInfer<{
             enabled: z<boolean, boolean, "defined">;
             maxRecords: z<number, number, "defined">;
+            writeToSession: z<boolean, boolean, "defined">;
         }>>, "plain">;
         cacheControl: z<Schemastery.ObjectS<NoInfer<{
             type: z<string, string, "defined">;

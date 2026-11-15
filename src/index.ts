@@ -36,6 +36,7 @@ import { observeArchives } from './archive-observer.ts'
 import { AgentHintSignals } from './composing-service.ts'
 import { HintTrace } from './trace.ts'
 import { AgentHintTraceService } from './trace-service.ts'
+import { createSessionTraceSink } from './session-trace.ts'
 import type {} from '@deepseek-ai/dsh-api-gateway'
 
 export { buildAgentHint } from './agent-hint.ts'
@@ -51,7 +52,9 @@ export { ControlBarrierError, COMPACTION_LINEAGE_WINDOW_MS, DEFAULT_PENDING_OP_A
 export type { BridgeWarnSink, LifecycleBridgeOptions } from './lifecycle-bridge.ts'
 export type { AgentHintCacheControl, AgentHintWire, SessionControlVerb } from './types.ts'
 export { HintTrace } from './trace.ts'
-export type { HintTraceRecord, HintTraceSnapshot } from './trace-record.ts'
+export type { HintTraceRecord, HintTraceSnapshot, HintTraceSnapshotSources } from './trace-record.ts'
+export { HINT_TRACE_RECORD_TYPE, createSessionTraceSink, hintTraceRecordOf, readSessionTraceRecords } from './session-trace.ts'
+export type { HintTraceSessionSinkOptions, SessionTraceReadResult } from './session-trace.ts'
 
 export const name = 'llm-agent-hint'
 export const inject = ['llm']
@@ -86,13 +89,30 @@ export function apply(ctx: Context, config: Config): void {
   const hintEnabled = config.agentHint?.enabled !== false
   const sessionControl = config.agentHint?.sessionControl
   const controlEnabled = hintEnabled && sessionControl?.enabled !== false
-  const trace = new HintTrace({ enabled: config.agentHint?.trace?.enabled !== false,
-    maxRecords: config.agentHint?.trace?.maxRecords ?? 2000,
+  const traceConfig = config.agentHint?.trace
+  const traceEnabled = traceConfig?.enabled !== false
+  const traceMaxRecords = traceConfig?.maxRecords ?? 2000
+  // Live Session lookup for both sides of the durable trace: the writer appends
+  // one record per attempt, the download reads the whole log back. Resolved per
+  // call so a host without the store, or one that loads later, degrades to
+  // stdout instead of failing.
+  const liveSession = (sessionId: string) => {
+    if (sessionId.length === 0) return undefined
+    const sessions = ctx.get('sessions')
+    return sessions === undefined ? undefined : sessions.get(SessionId(sessionId))
+  }
+  const writeSessionRecord = traceEnabled && traceConfig?.writeToSession !== false
+    ? createSessionTraceSink({ resolveSession: liveSession, maxRecords: traceMaxRecords,
+      warn: message => ctx.logger.warn(message) })
+    : undefined
+  const trace = new HintTrace({ enabled: traceEnabled,
+    maxRecords: traceMaxRecords,
     // Stock Web may suppress info-level framework logs. Explicit stdout keeps
     // this diagnostic channel available to Docker / service log collection.
-    log: record => console.info(`agent-hint/trace ${JSON.stringify(record)}`) })
-  if (config.agentHint?.trace?.enabled !== false) {
-    ctx.inject(['typertGateway'], scope => { scope.plugin(AgentHintTraceService, trace) })
+    log: record => console.info(`agent-hint/trace ${JSON.stringify(record)}`),
+    ...writeSessionRecord === undefined ? {} : { writeSessionRecord } })
+  if (traceEnabled) {
+    ctx.inject(['typertGateway'], scope => { scope.plugin(AgentHintTraceService, { trace, resolveSession: liveSession }) })
   }
   const bridge = controlEnabled
     ? new LifecycleBridge({

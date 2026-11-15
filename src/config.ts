@@ -56,8 +56,8 @@ export interface SessionControlConfig {
 export interface AgentHintConfig {
   /** Master switch; false retains the selected transport without hints/controls. */
   enabled: boolean
-  /** Bounded, content-free Host trace and a separate Web download. */
-  trace?: { enabled: boolean; maxRecords: number }
+  /** Bounded, content-free Host trace, a separate Web download, and an optional Session-log mirror. */
+  trace?: { enabled: boolean; maxRecords: number; writeToSession: boolean }
   /** Static coordinator cache policy copied verbatim into every hint. */
   cacheControl?: AgentHintCacheControl | undefined
   /** Session lifecycle control plane. */
@@ -96,6 +96,9 @@ export const Config = z.object({
     trace: z.object({
       enabled: z.boolean().default(true),
       maxRecords: z.number().step(1).min(1).max(10_000).default(2000),
+      // Mirrors each attempt's terminal record into the Session log through the
+      // 0.2.2 plugin record channel; stdout keeps every record either way.
+      writeToSession: z.boolean().default(true),
     }),
     // `z.object` implicitly defaults to `{}`, which would cascade a missing
     // `cacheControl` into existence and trip the inner required `type`. The

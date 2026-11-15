@@ -2,6 +2,8 @@
 import { randomUUID } from 'node:crypto'
 import type { AgentHintWire } from './types.ts'
 import type { HintTraceRecord, HintTraceSnapshot } from './trace-record.ts'
+import { HINT_TRACE_RECORD_TYPE } from './session-trace.ts'
+import type { SessionTraceReadResult } from './session-trace.ts'
 
 export interface HintTraceFacts {
   plane: HintTraceRecord['plane']
@@ -18,6 +20,9 @@ export interface HintTraceAttempt {
     details?: { httpStatus?: number; dispatched?: boolean }): void
 }
 const text = (value: string) => value.slice(0, 512)
+/** Two sources hold the same attempt when all four fields match. */
+const dedupeKey = (record: HintTraceRecord) =>
+  `${record.requestId}\u0000${record.phase}\u0000${record.attempt}\u0000${record.time}`
 
 export class HintTrace {
   private readonly records: HintTraceRecord[] = []
@@ -26,6 +31,12 @@ export class HintTrace {
     enabled?: boolean
     maxRecords?: number
     log?: (record: HintTraceRecord) => void
+    /**
+     * Durable mirror into the Session log. Called only for each attempt's
+     * terminal `result` record, so the log gains one line per attempt. The sink
+     * must not throw; `emit` contains it regardless.
+     */
+    writeSessionRecord?: (record: HintTraceRecord) => void
   } = {}) {
     const limit = options.maxRecords ?? 2000
     if (!Number.isInteger(limit) || limit < 1 || limit > 10_000) throw new Error('Trace maxRecords must be an integer from 1 to 10000')
@@ -59,10 +70,37 @@ export class HintTrace {
     } }
   }
 
-  snapshot(sessionId: string): HintTraceSnapshot {
-    return { schemaVersion: 1, sessionId, exportedAt: new Date().toISOString(), retention: 'process-local',
+  /**
+   * Merge the process-local window with the records read back from the Session
+   * log. The window wins on a duplicate key because both copies are the same
+   * object the writer emitted.
+   * @param sessionId - the session the export is for.
+   * @param fromLog - the Session log read-back, or `undefined` when nothing could be read.
+   * @returns a detached snapshot naming both sources and the dedupe rule.
+   */
+  snapshot(sessionId: string, fromLog?: SessionTraceReadResult): HintTraceSnapshot {
+    const window = this.records.filter(record => record.sessionId === sessionId)
+    const merged = new Map<string, HintTraceRecord>()
+    for (const record of window) merged.set(dedupeKey(record), record)
+    for (const record of fromLog?.records ?? []) {
+      const key = dedupeKey(record)
+      if (!merged.has(key)) merged.set(key, record)
+    }
+    // Stable time order only: for identical timestamps the merge order wins
+    // (window records in emission order, then log-only records in log order), so
+    // an attempt's phases stay contiguous and never reorder by request id.
+    const records = [...merged.values()]
+      .sort((left, right) => left.time < right.time ? -1 : left.time > right.time ? 1 : 0)
+    return { schemaVersion: 2, sessionId, exportedAt: new Date().toISOString(),
       limit: this.limit, droppedRecords: this.dropped,
-      records: structuredClone(this.records.filter(record => record.sessionId === sessionId)) }
+      sources: {
+        processWindow: { retention: 'process-local', records: window.length },
+        sessionLog: { retention: 'session-log', recordType: HINT_TRACE_RECORD_TYPE,
+          read: fromLog?.read ?? false, records: fromLog?.records.length ?? 0,
+          invalidRecords: fromLog?.invalid ?? 0 },
+        dedupe: 'requestId+phase+attempt+time',
+      },
+      records: structuredClone(records) }
   }
 
   private get limit(): number { return Math.max(1, Math.min(10_000, this.options.maxRecords ?? 2000)) }
@@ -71,5 +109,9 @@ export class HintTrace {
     while (this.records.length > this.limit) { this.records.shift(); this.dropped++ }
     // Logging must not fail or mutate requests, lifecycle state, or retained records.
     try { this.options.log?.(structuredClone(record)) } catch { /* diagnostic sink only */ }
+    // The Session log is a second diagnostic sink: a rejected append, a missing
+    // store or an exhausted budget degrades to stdout and never reaches the callers.
+    if (record.phase !== 'result') return
+    try { this.options.writeSessionRecord?.(structuredClone(record)) } catch { /* diagnostic sink only */ }
   }
 }
