@@ -91,10 +91,9 @@ export function apply(ctx: Context, config: Config): void {
   const traceConfig = config.agentHint?.trace
   const traceEnabled = traceConfig?.enabled !== false
   const traceMaxRecords = traceConfig?.maxRecords ?? 2000
-  // Live Session lookup for both sides of the durable trace: the writer appends
-  // one record per attempt, the download reads the whole log back. Resolved per
-  // call so a host without the store, or one that loads later, degrades to
-  // stdout instead of failing.
+  // Live Session lookup for the durable trace writer, resolved per call so a
+  // host without the store, or one that loads later, degrades to stdout
+  // instead of failing.
   const liveSession = (sessionId: string) => {
     if (sessionId.length === 0) return undefined
     const sessions = ctx.get('sessions')

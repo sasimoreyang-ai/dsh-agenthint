@@ -1,4 +1,4 @@
-/** Content-free diagnostic records shared by Host and Web. */
+/** Content-free diagnostic records written to stdout and the DSH Session log. */
 export interface HintTraceRecord {
   schemaVersion: 1
   requestId: string

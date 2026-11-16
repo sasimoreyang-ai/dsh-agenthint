@@ -5,18 +5,16 @@
 1. **DSH 会话日志**（`session.v4.jsonl`，与 `turn/start`、消息等会话事件放在同一个文件里），使用 DSH 0.2.2-rc.1 新增的 `appendPluginRecord` 通道，一条 attempt 只写一条终态记录；
 2. **服务端标准输出**，带 `agent-hint/trace` 前缀的 JSON 日志，可用 `docker logs` 或服务日志采集器读取，不依赖 DSH 框架的 info 日志级别；每条记录（含 `prepared`/`dispatch` 中间态）都会打印。
 
-服务端标准输出按条打印带 `agent-hint/trace` 前缀的 JSON 日志，可用 `docker logs` 或服务日志采集器读取，不依赖 DSH 框架的 info 日志级别。
-
 ## 为什么现在可以写入会话日志
 
 旧 SDK 的 `Session.append` 不开放外部事件的 `ignorable` 标记，直接写自定义事件可能让会话无法重新打开；DSH 0.2.2-rc.1 引入 `appendPluginRecord` 后，终态记录已能安全写入会话日志。
 
-DSH 0.2.2-rc.1 提供了官方实验通道 `appendPluginRecord(session, type, data)` / `pluginRecordOf(event)`，语义正好对症：
+DSH 0.2.2-rc.1 提供了官方实验通道 `appendPluginRecord(session, type, data)`，语义正好对症：
 
 - 记录是标记 `ignorable: true` 的事件，**不认识的 reader 会保留并跳过**它，不会拒绝重建会话；
 - 记录**不进入模型可见 surface**（没有 `surfaceOp`/`sourceEventSeqs`，`session.surface.nodes` 与 `deriveMessages()` 都不受影响）；
 - fork / resume 会随日志携带这些记录；
-- 读取侧必须自己校验 `data`：恢复来的记录可能带旧版本写入的任意 JSON。
+- 本插件只写不读：需要证据时直接从 `session.v4.jsonl` 取记录，不再提供读回通道。
 
 记录类型名带本包前缀（`plugin:mindagent-dsh-llm-agent-hint/trace`），不会与其他插件撞名。`PluginRecordMap` 是声明合并点，未在此登记的 key 会被 `appendPluginRecord` 的类型直接拒绝。
 
@@ -24,7 +22,7 @@ DSH 0.2.2-rc.1 提供了官方实验通道 `appendPluginRecord(session, type, da
 
 `appendPluginRecord` 的文档写明「Only production source under `packages/experimental/` may call this」。这是 DSH 仓库**对自己的发布流程**做的政策约定（由该仓库的 `verify-plugin-record-callers` 门禁检查其自有源码），**不是运行时检查**：本插件调用时不会被拒绝、不会降级。我们已知情并决定使用，理由是这个通道是当前唯一能让记录与会话事件同处的官方通道。
 
-升级宿主版本时必须重新确认三件事：该函数仍然存在；`PluginRecordMap` 声明合并点与记录名语法（`plugin:` + 小写斜杠分段）未被改动；不认识的 `ignorable` 记录仍然「保留并跳过」而不是拒绝加载会话。任一条件不成立时应把 `agentHint.trace.writeToSession` 设为 `false` 并回退到「进程内 + 下载」模式。
+升级宿主版本时必须重新确认三件事：该函数仍然存在；PluginRecordMap 声明合并点与记录名语法（plugin: + 小写斜杠分段）未被改动；不认识的 ignorable 记录仍然「保留并跳过」而不是拒绝加载会话。任一条件不成立时应把 gentHint.trace.writeToSession 设为 alse，回退到「只写 stdout」。
 
 ## 配置
 
@@ -44,7 +42,6 @@ DSH 0.2.2-rc.1 提供了官方实验通道 `appendPluginRecord(session, type, da
 - `writeToSession: false` 只关闭会话日志写入，stdout 与进程内窗口保持原样。怀疑宿主 plugin record 语义变化、或不想让会话文件变大时使用。
 - `maxRecords` 范围 1–10000，是整个插件实例内存窗口的记录总数上限，所有会话共享；窗口超限淘汰最旧记录，包括仍在进行中的请求的早期记录。
 - 会话日志写入**复用了同一个 `maxRecords` 作为节流依据**：每个会话在每个插件实例内最多写入 `maxRecords` 条终态记录，达到上限后该会话后续记录只写 stdout（首次跳过会记一条 warn）。这是内存窗口上限的镜像，避免长会话把日志写成无界。
-- 窗口只保存在当前进程内，重启/插件重载清空；`maxRecords` 是整个插件实例的记录总数上限，超出淘汰最旧记录。
 - 崩溃/重启前的记录只要已经进入会话日志，就仍在 `session.v4.jsonl` 里，可直接从会话日志读取；未写入的部分无法补回。
 
 ## 记录内容与写入时机

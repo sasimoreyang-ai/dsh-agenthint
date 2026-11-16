@@ -50,4 +50,4 @@ See the [2026-10-29 fix and verification notes](docs/release-correctness-2026102
 
 Adapter Hint tracing is enabled by default. Records go to **both** the original DSH Session log (`session.v4.jsonl`, next to the session events; one terminal record per attempt) and server stdout (every phase). The Session-log channel uses DSH 0.2.2 `appendPluginRecord`: each record is `ignorable`, never enters the model-visible surface, and travels with fork/resume.
 
-The Session-log half uses the DSH 0.2.2 `appendPluginRecord` channel: records are marked `ignorable`, never enter the model-visible surface, and travel with fork/resume. That API is documented as experimental-package-only, which is a known trade-off to re-confirm on every host upgrade. Set `agentHint.trace.writeToSession: false` to keep stdout and the window only. See [Hint trace](docs/trace.md) for configuration, throttling, read-side validation and corrupted-record handling.
+Set `agentHint.trace.writeToSession: false` to keep stdout and the window only. See [Hint trace](docs/trace.md) for configuration, throttling and degraded paths.
