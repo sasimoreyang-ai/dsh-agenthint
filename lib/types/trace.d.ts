@@ -19,7 +19,6 @@ export interface HintTraceAttempt {
 export declare class HintTrace {
     private readonly options;
     private readonly records;
-    private dropped;
     constructor(options?: {
         enabled?: boolean;
         maxRecords?: number;

@@ -2,7 +2,6 @@
 import { randomUUID } from 'node:crypto'
 import type { AgentHintWire } from './types.ts'
 import type { HintTraceRecord } from './trace-record.ts'
-import { HINT_TRACE_RECORD_TYPE } from './session-trace.ts'
 
 export interface HintTraceFacts {
   plane: HintTraceRecord['plane']
@@ -21,7 +20,6 @@ export interface HintTraceAttempt {
 const text = (value: string) => value.slice(0, 512)
 export class HintTrace {
   private readonly records: HintTraceRecord[] = []
-  private dropped = 0
   constructor(private readonly options: {
     enabled?: boolean
     maxRecords?: number
@@ -76,11 +74,10 @@ export class HintTrace {
     } }
   }
 
-
   private get limit(): number { return Math.max(1, Math.min(10_000, this.options.maxRecords ?? 2000)) }
   private emit(record: HintTraceRecord): void {
     this.records.push(record)
-    while (this.records.length > this.limit) { this.records.shift(); this.dropped++ }
+    while (this.records.length > this.limit) this.records.shift()
     // Logging must not fail or mutate requests, lifecycle state, or retained records.
     try { this.options.log?.(structuredClone(record)) } catch { /* diagnostic sink only */ }
     // The Session log is a second diagnostic sink: a rejected append, a missing

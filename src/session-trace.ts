@@ -23,7 +23,7 @@
  */
 
 import * as dshSession from '@deepseek-ai/dsh-session'
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import type { Session } from '@deepseek-ai/dsh-session'
 import type { HintTraceRecord } from './trace-record.ts'
 
 /**
@@ -46,13 +46,8 @@ declare module '@deepseek-ai/dsh-session' {
   }
 }
 
-const PHASES: readonly string[] = ['prepared', 'dispatch', 'result']
-const OUTCOMES: readonly string[] = ['prepared', 'dispatching', 'accepted', 'rejected', 'unknown', 'cancelled', 'not-dispatched']
-/** Same bound the writer applies, so a restored record cannot smuggle longer strings into an export. */
-const MAX_TEXT = 512
+/** Per-session append budget; mirrors the trace window bound. */
 const DEFAULT_MAX_RECORDS = 2000
-/** Corrupted payloads warn at most this many times per read; the total is still reported. */
-const MAX_WARNINGS = 5
 
 /** Dependencies of {@link createSessionTraceSink}. */
 export interface HintTraceSessionSinkOptions {
