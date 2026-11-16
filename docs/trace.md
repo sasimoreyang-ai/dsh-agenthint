@@ -5,11 +5,11 @@
 1. **DSH 会话日志**（`session.v4.jsonl`，与 `turn/start`、消息等会话事件放在同一个文件里），使用 DSH 0.2.2-rc.1 新增的 `appendPluginRecord` 通道，一条 attempt 只写一条终态记录；
 2. **服务端标准输出**，带 `agent-hint/trace` 前缀的 JSON 日志，可用 `docker logs` 或服务日志采集器读取，不依赖 DSH 框架的 info 日志级别；每条记录（含 `prepared`/`dispatch` 中间态）都会打印。
 
-Web 会话栏提供「下载 Hint trace」，通过现有认证 Connection/RPC 下载当前会话的 `agent-hint-trace.json`；下载会把「进程内窗口」和「会话日志里的历史记录」合并后去重导出，并在文件里标明来源与去重规则（见下文）。下载是只读操作，不发送模型请求或生命周期控制。没有 Gateway 或旧宿主没有该能力时，不显示按钮；生命周期控制关闭时，普通请求的 trace 和下载仍可工作。
+服务端标准输出按条打印带 `agent-hint/trace` 前缀的 JSON 日志，可用 `docker logs` 或服务日志采集器读取，不依赖 DSH 框架的 info 日志级别。
 
 ## 为什么现在可以写入会话日志
 
-旧 SDK 的 `Session.append` 不开放外部事件的 `ignorable` 标记，直接写自定义事件可能让会话无法重新打开，所以 trace 只能留在进程内并靠单独下载导出。
+旧 SDK 的 `Session.append` 不开放外部事件的 `ignorable` 标记，直接写自定义事件可能让会话无法重新打开；DSH 0.2.2-rc.1 引入 `appendPluginRecord` 后，终态记录已能安全写入会话日志。
 
 DSH 0.2.2-rc.1 提供了官方实验通道 `appendPluginRecord(session, type, data)` / `pluginRecordOf(event)`，语义正好对症：
 
@@ -40,12 +40,12 @@ DSH 0.2.2-rc.1 提供了官方实验通道 `appendPluginRecord(session, type, da
         writeToSession: true   # 默认 true；false 时只写 stdout 与进程内窗口
 ```
 
-- `enabled: false` 同时关闭服务端 trace、内存窗口、会话日志写入和 Web 下载能力，不关闭 Hint 本身。
-- `writeToSession: false` 只关闭会话日志写入：stdout、进程内窗口与下载保持原样。怀疑宿主 plugin record 语义变化、或不想让会话文件变大时使用。
+- `enabled: false` 同时关闭服务端 trace、内存窗口与会话日志写入，不关闭 Hint 本身。
+- `writeToSession: false` 只关闭会话日志写入，stdout 与进程内窗口保持原样。怀疑宿主 plugin record 语义变化、或不想让会话文件变大时使用。
 - `maxRecords` 范围 1–10000，是整个插件实例内存窗口的记录总数上限，所有会话共享；窗口超限淘汰最旧记录，包括仍在进行中的请求的早期记录。
 - 会话日志写入**复用了同一个 `maxRecords` 作为节流依据**：每个会话在每个插件实例内最多写入 `maxRecords` 条终态记录，达到上限后该会话后续记录只写 stdout（首次跳过会记一条 warn）。这是内存窗口上限的镜像，避免长会话把日志写成无界。
-- 窗口只保存在当前进程内，重启/插件重载清空；下载中的 `droppedRecords` 是整个窗口累计淘汰数，不是该会话的丢失数。
-- 崩溃/重启前的记录只要已经进入会话日志，就仍在 `session.v4.jsonl` 里，可通过下载读回；未写入的部分无法补回。
+- 窗口只保存在当前进程内，重启/插件重载清空；`maxRecords` 是整个插件实例的记录总数上限，超出淘汰最旧记录。
+- 崩溃/重启前的记录只要已经进入会话日志，就仍在 `session.v4.jsonl` 里，可直接从会话日志读取；未写入的部分无法补回。
 
 ## 记录内容与写入时机
 
@@ -66,31 +66,3 @@ DSH 0.2.2-rc.1 提供了官方实验通道 `appendPluginRecord(session, type, da
 - 没有 `sessions` 服务、该会话不在本进程的 Session store 中、或宿主没有导出 `appendPluginRecord`（旧宿主）时，自动跳过会话日志写入，不报错、不 warn；
 - `appendPluginRecord` 抛错（例如会话尚未完成 `session/created` 通告、数据不可 JSON 序列化、或它自身的写入校验失败）时，捕获后降级为「只写 stdout」，同一会话只 warn 一次；
 - 达到 `maxRecords` 预算时跳过并 warn 一次。
-
-## 下载：合并两个来源与校验
-
-`agentHintTrace/snapshot` 返回 `schemaVersion: 2` 的快照，`sources` 字段标明来源与去重规则：
-
-```json
-{
-  "schemaVersion": 2,
-  "sessionId": "...",
-  "limit": 2000,
-  "droppedRecords": 3,
-  "sources": {
-    "processWindow": { "retention": "process-local", "records": 42 },
-    "sessionLog": { "retention": "session-log",
-      "recordType": "plugin:mindagent-dsh-llm-agent-hint/trace",
-      "read": true, "records": 57, "invalidRecords": 1 },
-    "dedupe": "requestId+phase+attempt+time"
-  },
-  "records": [ ... ]
-}
-```
-
-- 两条来源会重叠：刚刚写入会话日志的记录仍在进程内窗口里。合并按 `requestId + phase + attempt + time` 去重，同一条只保留一份。
-- `records` 按 `time` 稳定排序；时间戳相同的记录保持合并时的顺序（先窗口记录、后仅存在于日志的记录），因此同一次 attempt 的各阶段不会被拆散。
-- 会话日志里的记录在**导出前会重新校验**：`schemaVersion` 必须是 1，`requestId/time/sessionId/model/phase/outcome/plane/transport/attempt` 必须是合法类型与取值，`hint` 字段逐项检查，未知字段被丢弃（不导出旧版本或外部写入的任意 JSON）。校验失败的记录**跳过并 warn，不抛错**，只计入 `invalidRecords`。
-- `read: false` 表示当前进程拿不到该会话的 Session（旧宿主或非本进程会话），这时导出只有窗口内容。
-- fork 出来的会话会随日志继承父会话的记录；导出只包含 `sessionId` 与本会话一致的记录，父会话的记录请在父会话里下载。**需人工确认**这一过滤是否符合使用预期。
-- 会话日志读取使用 `Session.snapshotEvents()`（0.2.2 标记为 deprecated、只读快照，语义稳定；同步全量读取目前没有替代 API）。若该 API 在后续版本被移除，下载会降级为 `read: false` 而不是报错，但需要在升级时补一个新的读取实现。

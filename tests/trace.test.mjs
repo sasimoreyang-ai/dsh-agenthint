@@ -8,15 +8,13 @@ import { HintTrace } from '../lib/types/trace.js'
 import { SessionControlClient } from '../lib/types/control-client.js'
 import { ChatCompletionsAdapter } from '../lib/types/chat-adapter.js'
 import { agentHintPrepareExtensions } from '../lib/types/extension.js'
-import { AgentHintTraceService } from '../lib/types/trace-service.js'
 import { LifecycleBridge } from '../lib/types/lifecycle-bridge.js'
 import * as plugin from '../lib/types/index.js'
-import { installTraceDownload } from '../lib/types/client/trace-download.js'
 
 const session = 'session-fixture'
 const hint = { session_id: session, session_control: { type: 'start' } }
 const facts = { plane: 'data', transport: 'chat', model: 'fixture-model', hint }
-const records = trace => trace.snapshot(session).records
+const records = trace => trace.recordsOf(session)
 const client = (trace, options = {}) => new SessionControlClient({
   endpoint: 'http://fixture.invalid/v1/chat/completions',
   resolveApiKey: async () => 'SECRET-KEY', model: 'fixture-model', timeoutMs: 1000, retries: 0,
@@ -35,8 +33,7 @@ test('trace config defaults on, can be disabled and bounds memory', () => {
   const trace = new HintTrace({ maxRecords: 2 })
   for (let i = 0; i < 3; i++) trace.begin(facts).finish('accepted', { httpStatus: 200 })
   assert.equal(records(trace).length, 2)
-  assert.equal(trace.snapshot(session).droppedRecords, 4)
-  assert.equal(trace.snapshot('other').records.length, 0)
+  assert.equal(trace.recordsOf('other').length, 0)
 })
 
 test('records are detached, allowlisted, bounded and sink failures are harmless', () => {
@@ -47,13 +44,13 @@ test('records are detached, allowlisted, bounded and sink failures are harmless'
   attempt.dispatch()
   attempt.finish('accepted', { httpStatus: 200, dispatched: true })
   attempt.finish('unknown')
-  const snapshot = trace.snapshot(session)
-  assert.equal(snapshot.records.length, 3)
-  assert.equal(snapshot.records[0].hint.session_control.type, 'start')
-  assert.equal(snapshot.records[0].model.length, 512)
-  assert.ok(snapshot.records.every(row => row.requestId === attempt.requestId))
+  const snapshot = trace.recordsOf(session)
+  assert.equal(snapshot.length, 3)
+  assert.equal(snapshot[0].hint.session_control.type, 'start')
+  assert.equal(snapshot[0].model.length, 512)
+  assert.ok(snapshot.every(row => row.requestId === attempt.requestId))
   assert.equal(JSON.stringify(snapshot).includes('SECRET'), false)
-  snapshot.records[0].hint.session_id = 'changed'
+  snapshot[0].hint.session_id = 'changed'
   assert.equal(records(trace)[0].hint.session_id, session)
   assert.ok(records(trace)[2].durationMs >= 0)
 })
@@ -218,67 +215,6 @@ test('Messages exposes only preparation and post-2xx acceptance, not invented di
   assert.equal(records(trace).at(-1).dispatched, undefined)
 })
 
-test('read-only export validates input and filters other sessions without creating lifecycle operations', async () => {
-  const trace = new HintTrace()
-  trace.begin({ ...facts, hint: { session_id: session } })
-  trace.begin({ ...facts, hint: { session_id: 'another' } })
-  const ctx = new Context()
-  try {
-    const service = new AgentHintTraceService(ctx, { trace })
-    assert.equal(service.available(), true)
-    assert.equal(service.snapshot({ sessionId: session }).records.length, 1)
-    assert.equal(service.snapshot({ sessionId: 'missing' }).records.length, 0)
-    for (const invalid of [null, '', {}, [], { sessionId: '' }, { sessionId: session, extra: true }, { sessionId: 'x'.repeat(513) }]) {
-      assert.throws(() => service.snapshot(invalid))
-    }
-  } finally { await ctx.fiber.dispose() }
-})
-
-test('export merges the process window with the Session log and labels both sources', async () => {
-  const ctx = new Context()
-  try {
-    const target = Session.create(SessionId(session))
-    const trace = new HintTrace()
-    trace.begin({ ...facts, hint: { session_id: session } }).finish('accepted', { httpStatus: 200 })
-    // A record only the durable log holds, as an earlier process would leave it.
-    appendPluginRecord(target, plugin.HINT_TRACE_RECORD_TYPE, {
-      schemaVersion: 1, requestId: 'durable-only', time: '2026-10-30T00:00:00.000Z', sessionId: session,
-      plane: 'data', transport: 'chat', model: 'fixture-model', attempt: 1, phase: 'result',
-      outcome: 'accepted', httpStatus: 200, durationMs: 1, dispatched: true,
-      hint: { session_id: session },
-    })
-    const service = new AgentHintTraceService(ctx, { trace, resolveSession: id => id === session ? target : undefined })
-    const snapshot = service.snapshot({ sessionId: session })
-    assert.equal(snapshot.schemaVersion, 2)
-    // Window order is kept for the attempt; the log-only record sorts first by time.
-    const attemptId = trace.snapshot(session).records[0].requestId
-    assert.deepEqual(snapshot.records.map(row => [row.requestId, row.phase]), [
-      ['durable-only', 'result'], [attemptId, 'dispatch'], [attemptId, 'result'],
-    ])
-    assert.deepEqual(snapshot.sources, {
-      processWindow: { retention: 'process-local', records: 2 },
-      sessionLog: { retention: 'session-log', recordType: plugin.HINT_TRACE_RECORD_TYPE,
-        read: true, records: 1, invalidRecords: 0 },
-      dedupe: 'requestId+phase+attempt+time',
-    })
-    assert.equal('retention' in snapshot, false)
-  } finally { await ctx.fiber.dispose() }
-})
-
-test('a corrupted Session log record is skipped and counted, never thrown', async () => {
-  const ctx = new Context()
-  try {
-    const target = Session.create(SessionId(session))
-    appendPluginRecord(target, plugin.HINT_TRACE_RECORD_TYPE, null)
-    appendPluginRecord(target, plugin.HINT_TRACE_RECORD_TYPE, { schemaVersion: 7, requestId: 'stale' })
-    const service = new AgentHintTraceService(ctx, { trace: new HintTrace(), resolveSession: () => target })
-    const snapshot = service.snapshot({ sessionId: session })
-    assert.deepEqual(snapshot.records, [])
-    assert.equal(snapshot.sources.sessionLog.invalidRecords, 2)
-    assert.equal(snapshot.sources.sessionLog.read, true)
-  } finally { await ctx.fiber.dispose() }
-})
-
 test('real plugin wiring appends exactly one terminal record per attempt to the Session log', async t => {
   let bridge
   const subscribe = LifecycleBridge.prototype.subscribe
@@ -377,63 +313,4 @@ test('real plugin wiring forwards lifecycle records to the server log', async t 
     const rows = logs.filter(row => row.startsWith('agent-hint/trace ')).map(row => JSON.parse(row.slice('agent-hint/trace '.length)))
     assert.ok(rows.some(row => row.hint.session_control.type === 'stop' && row.outcome === 'accepted'))
   } finally { logger.mock.restore(); await ctx.fiber.dispose() }
-})
-
-function browserFixture(available) {
-  let current = {}, change
-  const effects = [], registrations = [], calls = []
-  let withdrawn = 0
-  const connection = { generation: { getSnapshot: () => current, subscribe: fn => { change = fn; return () => {} } },
-    rpc: { call: async (_path, method, payload) => {
-      calls.push([method, payload])
-      return { ok: true, value: method.endsWith('/available') ? available : new HintTrace().snapshot(payload.args.request.sessionId) }
-    } } }
-  const ctx = { effect: fn => { effects.push(fn()) }, slots: {
-    inject: (_name, fn) => { const cancel = fn(); return () => { withdrawn++; cancel() } },
-    register: (registration, component) => { registrations.push({ registration, component }); return () => {} },
-  } }
-  const lifetime = new AbortController()
-  installTraceDownload(ctx, connection, lifetime.signal)
-  return { calls, registrations, disconnect: () => { current = undefined; change() },
-    get withdrawn() { return withdrawn }, dispose: () => { lifetime.abort(); effects.forEach(fn => fn()) } }
-}
-
-test('Web trace button probes separately and withdraws on disconnect', async () => {
-  const fixture = browserFixture(true)
-  await new Promise(resolve => setImmediate(resolve))
-  assert.equal(fixture.registrations.length, 1)
-  assert.equal(fixture.registrations[0].registration.name, 'conversation.session.header.utilities')
-  assert.deepEqual(fixture.calls.map(([method]) => method), ['agentHintTrace/available'])
-  fixture.disconnect()
-  assert.equal(fixture.withdrawn, 1)
-  fixture.dispose()
-})
-
-test('Web trace button stays absent when host does not advertise the feature', async () => {
-  const fixture = browserFixture(false)
-  await new Promise(resolve => setImmediate(resolve))
-  assert.equal(fixture.registrations.length, 0)
-  fixture.dispose()
-})
-
-test('Web download exports only the selected session snapshot through authenticated RPC', async t => {
-  const fixture = browserFixture(true)
-  const nodes = []
-  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document')
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: {
-    createElement: () => { const node = { click() { this.clicked = true }, remove() {} }; nodes.push(node); return node },
-    body: { appendChild() {} },
-  } })
-  t.after(() => {
-    if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument)
-    else delete globalThis.document
-  })
-  t.mock.method(URL, 'createObjectURL', blob => { assert.equal(blob.type, 'application/json'); return 'blob:fixture' })
-  t.mock.method(URL, 'revokeObjectURL', () => {})
-  await new Promise(resolve => setImmediate(resolve))
-  await fixture.registrations[0].registration.inject().download(session, new AbortController().signal)
-  assert.equal(nodes[0].clicked, true)
-  assert.equal(nodes[0].download, 'agent-hint-trace.json')
-  assert.deepEqual(fixture.calls[1], ['agentHintTrace/snapshot', { args: { request: { sessionId: session } } }])
-  fixture.dispose()
 })

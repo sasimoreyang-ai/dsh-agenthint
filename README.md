@@ -92,6 +92,6 @@ Chat 会输出与块匹配的 block-end，并在工具 ID 可用后及时输出�
 
 ## Hint trace
 
-默认开启适配器 Hint trace。记录同时落在**原 DSH 会话日志**（`session.v4.jsonl`，与 `turn/start`、消息等会话事件同处，每次 attempt 只写一条终态记录）和**服务端 stdout**（带 `agent-hint/trace` 前缀，含 `prepared`/`dispatch` 中间态），并提供独立的 Web 会话下载（合并进程内窗口与会话日志记录，并在文件里标注来源与去重规则）。
+默认开启适配器 Hint trace。记录同时落在**原 DSH 会话日志**（`session.v4.jsonl`，与 `turn/start`、消息等会话事件同处，每次 attempt 只写一条终态记录）和**服务端 stdout**（带 `agent-hint/trace` 前缀，含 `prepared`/`dispatch` 中间态）。会话日志使用 DSH 0.2.2 的 `appendPluginRecord` 通道：记录标记 `ignorable`、不进模型可见 surface、随 fork/resume 携带。
 
 会话日志写入使用 DSH 0.2.2 新增的 `appendPluginRecord` 通道：记录标记 `ignorable`、不进入模型可见 surface、随 fork/resume 携带；该 API 文档限定实验包使用，属于已知取舍，升级宿主时需重新确认其语义。`agentHint.trace.writeToSession: false` 可只保留 stdout 与进程内窗口。配置、节流、读取校验与损坏记录处理见 [Hint trace](docs/trace.md)。

@@ -1,9 +1,8 @@
 /** Bounded, non-authoritative adapter diagnostics; no prompts, credentials or raw errors. */
 import { randomUUID } from 'node:crypto'
 import type { AgentHintWire } from './types.ts'
-import type { HintTraceRecord, HintTraceSnapshot } from './trace-record.ts'
+import type { HintTraceRecord } from './trace-record.ts'
 import { HINT_TRACE_RECORD_TYPE } from './session-trace.ts'
-import type { SessionTraceReadResult } from './session-trace.ts'
 
 export interface HintTraceFacts {
   plane: HintTraceRecord['plane']
@@ -20,10 +19,6 @@ export interface HintTraceAttempt {
     details?: { httpStatus?: number; dispatched?: boolean }): void
 }
 const text = (value: string) => value.slice(0, 512)
-/** Two sources hold the same attempt when all four fields match. */
-const dedupeKey = (record: HintTraceRecord) =>
-  `${record.requestId}\u0000${record.phase}\u0000${record.attempt}\u0000${record.time}`
-
 export class HintTrace {
   private readonly records: HintTraceRecord[] = []
   private dropped = 0
@@ -42,6 +37,17 @@ export class HintTrace {
     if (!Number.isInteger(limit) || limit < 1 || limit > 10_000) throw new Error('Trace maxRecords must be an integer from 1 to 10000')
   }
 
+  /**
+   * Records this process holds for one session, in emission order.
+   *
+   * The window keeps every attempt phase, unlike the Session log, which carries
+   * only the terminal record; read it for in-process diagnosis and tests.
+   * @param sessionId - session whose records to return.
+   * @returns a detached copy; mutating it cannot alter retained records.
+   */
+  recordsOf(sessionId: string): HintTraceRecord[] {
+    return structuredClone(this.records.filter(record => record.sessionId === sessionId))
+  }
   begin(facts: HintTraceFacts, phase: 'prepared' | 'dispatch' = 'dispatch'): HintTraceAttempt {
     if (this.options.enabled === false) return { dispatch() {}, finish() {} }
     const hint: HintTraceRecord['hint'] = { session_id: text(facts.hint.session_id) }
@@ -70,38 +76,6 @@ export class HintTrace {
     } }
   }
 
-  /**
-   * Merge the process-local window with the records read back from the Session
-   * log. The window wins on a duplicate key because both copies are the same
-   * object the writer emitted.
-   * @param sessionId - the session the export is for.
-   * @param fromLog - the Session log read-back, or `undefined` when nothing could be read.
-   * @returns a detached snapshot naming both sources and the dedupe rule.
-   */
-  snapshot(sessionId: string, fromLog?: SessionTraceReadResult): HintTraceSnapshot {
-    const window = this.records.filter(record => record.sessionId === sessionId)
-    const merged = new Map<string, HintTraceRecord>()
-    for (const record of window) merged.set(dedupeKey(record), record)
-    for (const record of fromLog?.records ?? []) {
-      const key = dedupeKey(record)
-      if (!merged.has(key)) merged.set(key, record)
-    }
-    // Stable time order only: for identical timestamps the merge order wins
-    // (window records in emission order, then log-only records in log order), so
-    // an attempt's phases stay contiguous and never reorder by request id.
-    const records = [...merged.values()]
-      .sort((left, right) => left.time < right.time ? -1 : left.time > right.time ? 1 : 0)
-    return { schemaVersion: 2, sessionId, exportedAt: new Date().toISOString(),
-      limit: this.limit, droppedRecords: this.dropped,
-      sources: {
-        processWindow: { retention: 'process-local', records: window.length },
-        sessionLog: { retention: 'session-log', recordType: HINT_TRACE_RECORD_TYPE,
-          read: fromLog?.read ?? false, records: fromLog?.records.length ?? 0,
-          invalidRecords: fromLog?.invalid ?? 0 },
-        dedupe: 'requestId+phase+attempt+time',
-      },
-      records: structuredClone(records) }
-  }
 
   private get limit(): number { return Math.max(1, Math.min(10_000, this.options.maxRecords ?? 2000)) }
   private emit(record: HintTraceRecord): void {

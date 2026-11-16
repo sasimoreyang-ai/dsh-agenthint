@@ -30,9 +30,9 @@ export { ControlBarrierError, COMPACTION_LINEAGE_WINDOW_MS, DEFAULT_PENDING_OP_A
 export type { BridgeWarnSink, LifecycleBridgeOptions } from './lifecycle-bridge.ts';
 export type { AgentHintCacheControl, AgentHintWire, SessionControlVerb } from './types.ts';
 export { HintTrace } from './trace.ts';
-export type { HintTraceRecord, HintTraceSnapshot, HintTraceSnapshotSources } from './trace-record.ts';
-export { HINT_TRACE_RECORD_TYPE, createSessionTraceSink, hintTraceRecordOf, readSessionTraceRecords } from './session-trace.ts';
-export type { HintTraceSessionSinkOptions, SessionTraceReadResult } from './session-trace.ts';
+export type { HintTraceRecord } from './trace-record.ts';
+export { HINT_TRACE_RECORD_TYPE, createSessionTraceSink } from './session-trace.ts';
+export type { HintTraceSessionSinkOptions } from './session-trace.ts';
 export declare const name = "llm-agent-hint";
 export declare const inject: string[];
 export declare function apply(ctx: Context, config: Config): void;

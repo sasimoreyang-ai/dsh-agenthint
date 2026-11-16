@@ -1,6 +1,5 @@
 import type { AgentHintWire } from './types.ts';
-import type { HintTraceRecord, HintTraceSnapshot } from './trace-record.ts';
-import type { SessionTraceReadResult } from './session-trace.ts';
+import type { HintTraceRecord } from './trace-record.ts';
 export interface HintTraceFacts {
     plane: HintTraceRecord['plane'];
     transport: HintTraceRecord['transport'];
@@ -32,16 +31,16 @@ export declare class HintTrace {
          */
         writeSessionRecord?: (record: HintTraceRecord) => void;
     });
-    begin(facts: HintTraceFacts, phase?: 'prepared' | 'dispatch'): HintTraceAttempt;
     /**
-     * Merge the process-local window with the records read back from the Session
-     * log. The window wins on a duplicate key because both copies are the same
-     * object the writer emitted.
-     * @param sessionId - the session the export is for.
-     * @param fromLog - the Session log read-back, or `undefined` when nothing could be read.
-     * @returns a detached snapshot naming both sources and the dedupe rule.
+     * Records this process holds for one session, in emission order.
+     *
+     * The window keeps every attempt phase, unlike the Session log, which carries
+     * only the terminal record; read it for in-process diagnosis and tests.
+     * @param sessionId - session whose records to return.
+     * @returns a detached copy; mutating it cannot alter retained records.
      */
-    snapshot(sessionId: string, fromLog?: SessionTraceReadResult): HintTraceSnapshot;
+    recordsOf(sessionId: string): HintTraceRecord[];
+    begin(facts: HintTraceFacts, phase?: 'prepared' | 'dispatch'): HintTraceAttempt;
     private get limit();
     private emit;
 }

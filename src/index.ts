@@ -35,7 +35,6 @@ import { DEFAULT_PENDING_OP_AWAIT_MS, DEFAULT_QUARANTINE_TTL_MS, LifecycleBridge
 import { observeArchives } from './archive-observer.ts'
 import { AgentHintSignals } from './composing-service.ts'
 import { HintTrace } from './trace.ts'
-import { AgentHintTraceService } from './trace-service.ts'
 import { createSessionTraceSink } from './session-trace.ts'
 import type {} from '@deepseek-ai/dsh-api-gateway'
 
@@ -52,9 +51,9 @@ export { ControlBarrierError, COMPACTION_LINEAGE_WINDOW_MS, DEFAULT_PENDING_OP_A
 export type { BridgeWarnSink, LifecycleBridgeOptions } from './lifecycle-bridge.ts'
 export type { AgentHintCacheControl, AgentHintWire, SessionControlVerb } from './types.ts'
 export { HintTrace } from './trace.ts'
-export type { HintTraceRecord, HintTraceSnapshot, HintTraceSnapshotSources } from './trace-record.ts'
-export { HINT_TRACE_RECORD_TYPE, createSessionTraceSink, hintTraceRecordOf, readSessionTraceRecords } from './session-trace.ts'
-export type { HintTraceSessionSinkOptions, SessionTraceReadResult } from './session-trace.ts'
+export type { HintTraceRecord } from './trace-record.ts'
+export { HINT_TRACE_RECORD_TYPE, createSessionTraceSink } from './session-trace.ts'
+export type { HintTraceSessionSinkOptions } from './session-trace.ts'
 
 export const name = 'llm-agent-hint'
 export const inject = ['llm']
@@ -111,9 +110,6 @@ export function apply(ctx: Context, config: Config): void {
     // this diagnostic channel available to Docker / service log collection.
     log: record => console.info(`agent-hint/trace ${JSON.stringify(record)}`),
     ...writeSessionRecord === undefined ? {} : { writeSessionRecord } })
-  if (traceEnabled) {
-    ctx.inject(['typertGateway'], scope => { scope.plugin(AgentHintTraceService, { trace, resolveSession: liveSession }) })
-  }
   const bridge = controlEnabled
     ? new LifecycleBridge({
       client: new SessionControlClient({

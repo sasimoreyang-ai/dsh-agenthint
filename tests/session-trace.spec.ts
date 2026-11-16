@@ -7,7 +7,7 @@ import { HintTrace } from '../src/trace.ts'
 import type { HintTraceFacts } from '../src/trace.ts'
 import type { HintTraceRecord } from '../src/trace-record.ts'
 import {
-  HINT_TRACE_RECORD_TYPE, createSessionTraceSink, hintTraceRecordOf, readSessionTraceRecords,
+  HINT_TRACE_RECORD_TYPE, createSessionTraceSink,
 } from '../src/session-trace.ts'
 
 const SESSION = 'session-1'
@@ -38,38 +38,6 @@ const record = (overrides: Partial<HintTraceRecord> = {}): HintTraceRecord => ({
 /** Independent Session: appends are legal without a store, so no host wiring is needed. */
 const detached = (id = SESSION) => Session.create(SessionId(id))
 
-describe('hint trace payload validation', () => {
-  it('accepts a complete record and drops fields this build does not own', () => {
-    const parsed = hintTraceRecordOf({ ...record(), secret: 'SECRET-EXTRA', hint: { ...record().hint, extra: 'SECRET-HINT' } })
-    expect(parsed).toEqual(record())
-    expect(JSON.stringify(parsed)).not.toContain('SECRET')
-  })
-
-  it('rejects payloads an older or hostile build could have written', () => {
-    for (const data of [null, undefined, 'text', 42, [], {},
-      { ...record(), schemaVersion: 2 },
-      { ...record(), requestId: 7 },
-      { ...record(), time: 'not-a-time' },
-      { ...record(), time: 'x'.repeat(513) },
-      { ...record(), attempt: 0 },
-      { ...record(), attempt: 1.5 },
-      { ...record(), phase: 'dispatch-extra' },
-      { ...record(), outcome: 'succeeded' },
-      { ...record(), plane: 'control-plane' },
-      { ...record(), transport: 'http' },
-      { ...record(), httpStatus: '200' },
-      { ...record(), durationMs: -1 },
-      { ...record(), dispatched: 'yes' },
-      { ...record(), hint: undefined },
-      { ...record(), hint: { session_id: '' } },
-      { ...record(), hint: { session_id: SESSION, cache_control: { type: 5 } } }]) {
-      expect(hintTraceRecordOf(data)).toBeUndefined()
-    }
-    const { httpStatus: _httpStatus, durationMs: _durationMs, dispatched: _dispatched, ...minimal } = record()
-    expect(hintTraceRecordOf(minimal)).toEqual(minimal)
-  })
-})
-
 describe('session log writer', () => {
   it('writes exactly one record per attempt, and only the terminal one', () => {
     const session = detached()
@@ -89,8 +57,6 @@ describe('session log writer', () => {
     expect(committed?.type).toBe(HINT_TRACE_RECORD_TYPE)
     expect(events[0]?.ignorable).toBe(true)
     expect(committed?.data).toEqual(writes[0])
-    expect(readSessionTraceRecords(session, SESSION).records).toEqual([record({ requestId: writes[0]?.requestId,
-      time: writes[0]?.time as string, durationMs: writes[0]?.durationMs as number })])
   })
 
   it('keeps every intermediate record on stdout while the log stays minimal', () => {
@@ -146,7 +112,7 @@ describe('session log writer', () => {
       expect(warn).toHaveBeenCalledTimes(1)
       expect(logged.map(value => value.phase)).toEqual(['dispatch', 'result'])
       expect(unannounced.snapshotEvents()).toHaveLength(0)
-      expect(trace.snapshot(SESSION).records).toHaveLength(2)
+      expect(trace.recordsOf(SESSION)).toHaveLength(2)
     } finally { await ctx.fiber.dispose() }
   })
 
@@ -154,76 +120,7 @@ describe('session log writer', () => {
     const trace = new HintTrace({ writeSessionRecord: () => { throw new Error('SECRET-SINK') } })
     const attempt = trace.begin(facts())
     expect(() => attempt.finish('accepted', { httpStatus: 200 })).not.toThrow()
-    expect(trace.snapshot(SESSION).records.map(value => value.phase)).toEqual(['dispatch', 'result'])
-  })
-})
-
-describe('session log reader', () => {
-  it('reads records back, skips a corrupt payload and warns instead of throwing', () => {
-    const session = detached()
-    appendPluginRecord(session, HINT_TRACE_RECORD_TYPE, record({ requestId: 'kept' }))
-    appendPluginRecord(session, HINT_TRACE_RECORD_TYPE, { schemaVersion: 99, requestId: 'corrupt' } as never)
-    appendPluginRecord(session, HINT_TRACE_RECORD_TYPE, record({ requestId: 'foreign', sessionId: OTHER }))
-    const warn = vi.fn()
-    const read = readSessionTraceRecords(session, SESSION, warn)
-    expect(read.read).toBe(true)
-    expect(read.records.map(value => value.requestId)).toEqual(['kept'])
-    expect(read.invalid).toBe(1)
-    expect(warn).toHaveBeenCalledTimes(1)
-  })
-
-  it('reports an unreadable log instead of failing the export', () => {
-    const broken = { snapshotEvents: () => { throw new Error('SECRET-READ') } } as unknown as Session
-    expect(readSessionTraceRecords(broken, SESSION)).toEqual({ records: [], invalid: 0, read: false })
-  })
-})
-
-describe('merged download snapshot', () => {
-  // The Gateway service itself is exercised in tests/trace.test.mjs: its module
-  // carries stage-3 decorators, which only the built lib can run here.
-  it('merges the window with the log, deduplicates the shared attempt and labels both sources', () => {
-    const session = detached()
-    const trace = new HintTrace({ writeSessionRecord: createSessionTraceSink({ resolveSession: () => session }) })
-    const attempt = trace.begin(facts())
-    attempt.finish('accepted', { httpStatus: 200 })
-    // An earlier run's record only exists in the log.
-    appendPluginRecord(session, HINT_TRACE_RECORD_TYPE,
-      record({ requestId: 'earlier', time: '2026-10-31T00:00:00.000Z' }))
-    const merged = trace.snapshot(SESSION, readSessionTraceRecords(session, SESSION))
-    expect(merged.schemaVersion).toBe(2)
-    // The terminal record exists in both sources; `requestId+phase+attempt+time` keeps one.
-    expect(merged.records.map(value => [value.requestId, value.phase])).toEqual([
-      ['earlier', 'result'],
-      [attempt.requestId, 'dispatch'],
-      [attempt.requestId, 'result'],
-    ])
-    expect(merged.sources).toEqual({
-      processWindow: { retention: 'process-local', records: 2 },
-      sessionLog: { retention: 'session-log', recordType: HINT_TRACE_RECORD_TYPE,
-        read: true, records: 2, invalidRecords: 0 },
-      dedupe: 'requestId+phase+attempt+time',
-    })
-  })
-
-  it('isolates sessions and reports an unreadable log as window only', () => {
-    const session = detached()
-    const trace = new HintTrace()
-    trace.begin(facts()).finish('accepted', { httpStatus: 200 })
-    trace.begin(facts({ hint: { session_id: OTHER } })).finish('accepted', { httpStatus: 200 })
-    expect(trace.snapshot(SESSION, readSessionTraceRecords(session, SESSION)).sources.sessionLog)
-      .toEqual({ retention: 'session-log', recordType: HINT_TRACE_RECORD_TYPE, read: true, records: 0, invalidRecords: 0 })
-    const unavailable = trace.snapshot(SESSION)
-    expect(unavailable.records).toHaveLength(2)
-    expect(unavailable.sources.sessionLog).toEqual({ retention: 'session-log', recordType: HINT_TRACE_RECORD_TYPE,
-      read: false, records: 0, invalidRecords: 0 })
-  })
-
-  it('reports corrupted records without exporting them', () => {
-    const session = detached()
-    appendPluginRecord(session, HINT_TRACE_RECORD_TYPE, { schemaVersion: 1 } as never)
-    const snapshot = new HintTrace().snapshot(SESSION, readSessionTraceRecords(session, SESSION))
-    expect(snapshot.records).toEqual([])
-    expect(snapshot.sources.sessionLog.invalidRecords).toBe(1)
+    expect(trace.recordsOf(SESSION).map(value => value.phase)).toEqual(['dispatch', 'result'])
   })
 })
 
@@ -246,7 +143,7 @@ describe('configuration', () => {
       writeSessionRecord: createSessionTraceSink({ resolveSession: () => session }) })
     disabled.begin(facts()).finish('accepted', { httpStatus: 200 })
     expect(session.snapshotEvents()).toHaveLength(1)
-    expect(disabled.snapshot(SESSION).records).toHaveLength(0)
+    expect(disabled.recordsOf(SESSION)).toHaveLength(0)
   })
 })
 
