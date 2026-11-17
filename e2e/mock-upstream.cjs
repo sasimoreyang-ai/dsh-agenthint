@@ -44,6 +44,14 @@ const server = http.createServer((req, res) => {
       choices: [{ index: 0, delta: { role: 'assistant', content: 'pong' }, finish_reason: null }] })
     send({ id: 'mock-1', object: 'chat.completion.chunk', created: 0, model: 'mock-model',
       choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })
+    // Report an inflated prompt: DSH decides whether to compact from the usage the
+    // backend reports, not from the configured window, so a mock that omits usage
+    // can never trigger a compaction.
+    if (body?.stream_options?.include_usage === true) {
+      const used = Number(process.env.MOCK_PROMPT_TOKENS || 0)
+      send({ id: 'mock-1', object: 'chat.completion.chunk', created: 0, model: 'mock-model',
+        choices: [], usage: { prompt_tokens: used, completion_tokens: 8, total_tokens: used + 8 } })
+    }
     res.write('data: [DONE]\n\n')
     res.end()
   })
