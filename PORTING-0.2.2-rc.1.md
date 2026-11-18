@@ -27,38 +27,7 @@ options = plainOptions(effective as Parameters<typeof plainOptions>[0])
 
 ### ② P1 — `SessionStore.fork()` 不再写 `header.parentSession`
 
-`src/lifecycle-bridge.ts`（`onSessionCreated` + 新增私有方法）：
-
-```ts
-state.parentSessionId = this.compactionParentOf(session, state.seeded)
-```
-
-```ts
-private compactionParentOf(session: Session, seeded: boolean): SessionId | undefined {
-  const header = session.header
-  // `origin === 'subagent'` marks a subagent child. Its `parentSession` names that
-  // subagent's creator, never a session this one was compacted away from.
-  if (header.origin === 'subagent') return undefined
-  // Historical (pre-0.2.2) ordinary forks still carry their source id here.
-  if (header.parentSession !== undefined) return header.parentSession
-  const recent = this.recentCompaction
-  if (recent === undefined) return undefined
-  if (Date.now() - recent.at > COMPACTION_LINEAGE_WINDOW_MS) { this.recentCompaction = undefined; return undefined }
-  if (String(recent.sessionId) === String(session.id) || !seeded) return undefined
-  // One observed compaction plausibly explains one forked session; consume the hint so a
-  // second seeded session inside the same window is not mis-attributed to the same parent.
-  this.recentCompaction = undefined
-  return recent.sessionId
-}
-```
-
-配套改动：
-- 新常量 `COMPACTION_LINEAGE_WINDOW_MS = 60_000`（并从 `src/index.ts` 导出）。
-- 新字段 `private recentCompaction: { sessionId: SessionId; at: number } | undefined`，在 `onSessionEvent` 观察到成功的 `compaction/end` 时写入（`error !== undefined` 的失败压缩不写，`dispose()` 清空）。
-- 方法 JSDoc 明确写出「新版 DSH 不再持久化普通 fork 的父会话，此处为启发式推断」以及窗口外/同窗口两次降级为「未知血缘」而**不是**报错。
-- `src/index.ts` 中 `prepareHint` 的兜底分支（原 `:157`）新增注释说明血缘来源：无 bridge 时永不报父会话，有 bridge 时由 `origin` + `compaction/end` 启发式提供。
-
-为什么：0.2.2 的 `SessionHeader.parentSession` 语义改为「**子 agent 的直接创建者**」，普通 fork 不再写该字段（`types.d.ts` 注释："Ordinary forks omit this field; historical ordinary forks may retain their source id here. Presence alone does not classify a Session as a subagent; use `origin` for that distinction."）。因此必须先用 `origin` 把 subagent 谱系排除（否则会把 subagent 血缘误当成压缩父会话，协调器侧会挂错缓存链），再对普通 fork 用启发式补血缘。
+普通会话仅采信 header 中明确记录的历史父 ID；子 agent 的创建者不作为压缩父会话。新版普通 fork 未记录父 ID 时省略 `parent_session_id`。压缩成功仍为原会话发送 `compact`，不按时间猜测后续会话的归属。
 
 ### ③ P1 — `purpose` 从闭集改为泛型声明合并
 
@@ -149,7 +118,7 @@ ctx.on('llm/models-updated', provider => {
 | `tests/gateway.spec.ts` | 只挂 `TypertRegistry` + `TypertGatewayService`；`invoke({namespace,method,args})` | 加挂 `RemoteAccessService`；`invoke` 必须带 `peer`（`new Peer(ctx, { principal: { kind: 'owner' } })`） |
 | `tests/loader-composition.spec.ts` | 同上 | 同上（两处 `typertGateway.invoke` 补 `peer`） |
 | `tests/client-bundle.spec.ts` | `OperatorPeer` + `connection.rpc.intercept(channel, claim, handler)` | `Peer`（`OperatorPeer` 已删除）；`intercept('/api', matches, handler)`，handler 第 4 参为 `peer`；加挂 `RemoteAccessService` |
-| `tests/lifecycle-bridge.spec.ts` | 只有 header 血缘用例 | 新增 5 个用例覆盖 ② 的 `origin` 守卫与启发式（窗口内、窗口外、未 seeded、消费一次、失败压缩不推断） |
+| `tests/lifecycle-bridge.spec.ts` | 只有 header 血缘用例 | 覆盖子 agent 和压缩后打开无关历史会话的情况 |
 
 ## 三、验收结果（本机，Node v24.19.0 / npm 11.17.0）
 
@@ -168,11 +137,8 @@ npm run check -> ok
 
 ## 四、遗留风险 / 需人工确认
 
-1. **② 的启发式血缘是推断，不是事实。** DSH 不再提供普通 fork 的父会话，插件只能按「`compaction/end` 之后 60s 内出现的第一个 seeded 会话」归属。已知失效场景：
-   - 压缩后用户在窗口内又开了一个普通的 seeded 会话（replay/resume），会被误归属——因此实现里**消费一次**即失效，牺牲第二个会话的准确性换取第一个的正确性；
-   - 压缩后 fork 落地超过 60s（大日志压缩、慢上传）则血缘丢失，`parent_session_id` 直接不出现（行为上等于「未知」而非报错）；
-   - 同一窗口内发生两次压缩时，只有最后一次观察生效。
-   **需人工在真机确认**：协调器（MindIE-Motor）侧是否真的依赖 `parent_session_id` 做缓存复用；若依赖，建议后续把血缘改为「由 fork 调用方显式传入」而不是继续靠时间窗。
+1. 新版普通 fork 没有明确父 ID，不会提示引擎跨会话复用。
+
 2. **`origin === 'subagent'` 的判定依赖 0.2.2 的 header 契约。** TypeScript 层面已通过（`origin?: 'subagent'`），但「普通 fork 不写 `parentSession`」是行为契约，只有真机跑一次 compact/fork 才能确认没有残留写入口（历史 log 仍可能带 `parentSession`，实现已兼容读取）。
 3. **浏览器 DOM 契约未在真机验证。** `src/client/` 依赖目标宿主的 composer DOM 标记（`[data-slot="conversation.composer.bar"]` 等）。0.2.2 的 `dsh-client-ui-conversation` 输入域改动很大（`input/editor/runtime.d.ts` 等 55+ 行变更、新增 `CommandChip`/`QuoteNode`/`draft.d.ts`），`composer.spec.ts` 用的是本地 fixture DOM，无法证明真实宿主上仍匹配。**需人工在 0.2.2-rc.1 真机做一次浏览器验收**（挂载、切页、草稿恢复、编辑触发 composing）。
 4. **`purpose` 语义变宽后的行为差异。** 现在任何非空 `purpose` 都不注入 hint；0.2.2 新增了目的（如 auto-review、session-title 走 LLM）。若某天某个后台调用需要 hint 注入，本插件会静默跳过——这是既有设计（避免污染 KV 缓存），但语义边界变宽了，值得人工确认是否符合预期。

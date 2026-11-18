@@ -18,12 +18,7 @@ export interface LifecycleBridgeOptions {
 }
 export const DEFAULT_PENDING_OP_AWAIT_MS = 2_000
 export const DEFAULT_QUARANTINE_TTL_MS = 30 * 60 * 1_000
-/**
- * How long after an observed `compaction/end` a seeded session may still be
- * attributed to that compacted session. Newer DSH stopped persisting an ordinary
- * fork's parent, so lineage is inferred from this window (see
- * {@link LifecycleBridge.compactionParentOf}).
- */
+/** @deprecated Retained for API compatibility. Session lineage is no longer inferred by time. */
 export const COMPACTION_LINEAGE_WINDOW_MS = 60_000
 export class ControlBarrierError extends LlmError {
   constructor() {
@@ -61,8 +56,6 @@ interface SessionState {
 export class LifecycleBridge {
   private readonly states = new Map<string, SessionState>()
   private lastOrdinarySessionId: string | undefined
-  /** Last observed successful `compaction/end`, used only for the lineage heuristic. */
-  private recentCompaction: { sessionId: SessionId; at: number } | undefined
   private disposed = false
   private readonly lifetime = new AbortController()
   get signal(): AbortSignal { return this.lifetime.signal }
@@ -83,7 +76,6 @@ export class LifecycleBridge {
     for (const state of this.states.values()) state.releaseData?.()
     this.states.clear()
     this.lastOrdinarySessionId = undefined
-    this.recentCompaction = undefined
   }
   facts(sessionId: SessionId | undefined): {
     seeded: boolean; firstOrdinarySent: boolean; parentSessionId: SessionId | undefined
@@ -170,48 +162,11 @@ export class LifecycleBridge {
     state.agentStatus = 'idle'
     state.pausePending = false
     state.pauseSent = false
-    state.parentSessionId = this.compactionParentOf(session, state.seeded)
+    // Ordinary historical forks may name their source; a subagent names its creator instead.
+    state.parentSessionId = session.header.origin === 'subagent' ? undefined : session.header.parentSession
     // The session is live again, so it must not be swept; the retained `unsafe`
     // flag still refuses new inference until the coordinator is reconciled.
     state.quarantineSince = undefined
-  }
-  /**
-   * Compaction parent to report for a session that was just announced.
-   *
-   * Newer DSH no longer persists the parent of an ordinary fork: `header.parentSession`
-   * now means "direct creator of a subagent session", and an ordinary fork omits it.
-   * A subagent's lineage is therefore never a compaction parent, so `origin` decides
-   * first and only a non-subagent session may report one.
-   *
-   * Because the ordinary-fork link is gone from the header, the remaining case is a
-   * **heuristic inference**: the first seeded session announced within
-   * {@link COMPACTION_LINEAGE_WINDOW_MS} after this bridge observed `compaction/end` of
-   * session A is bound to A. DSH reports no fact here, so a compaction whose fork lands
-   * outside the window, or two seeded sessions inside one window, degrades to "unknown"
-   * lineage (`parent_session_id` omitted or attributed once) rather than an error.
-   *
-   * @param session - the newly announced session.
-   * @param seeded - whether the session was created with prior history.
-   * @returns the parent session id to advertise, or `undefined` when unknown.
-   */
-  private compactionParentOf(session: Session, seeded: boolean): SessionId | undefined {
-    const header = session.header
-    // `origin === 'subagent'` marks a subagent child. Its `parentSession` names that
-    // subagent's creator, never a session this one was compacted away from.
-    if (header.origin === 'subagent') return undefined
-    // Historical (pre-0.2.2) ordinary forks still carry their source id here.
-    if (header.parentSession !== undefined) return header.parentSession
-    const recent = this.recentCompaction
-    if (recent === undefined) return undefined
-    if (Date.now() - recent.at > COMPACTION_LINEAGE_WINDOW_MS) {
-      this.recentCompaction = undefined
-      return undefined
-    }
-    if (String(recent.sessionId) === String(session.id) || !seeded) return undefined
-    // One observed compaction plausibly explains one forked session; consume the hint so a
-    // second seeded session inside the same window is not mis-attributed to the same parent.
-    this.recentCompaction = undefined
-    return recent.sessionId
   }
   ensureResume(sessionId: SessionId | undefined, model: string): void {
     if (sessionId === undefined || this.disposed) return
@@ -235,9 +190,6 @@ export class LifecycleBridge {
   }
   onSessionEvent(session: Session, event: SessionEvent): void {
     if (event.type !== 'compaction/end' || event.data.error !== undefined) return
-    // Newer DSH no longer persists an ordinary fork's parent session, so this observation is
-    // the only live signal the lineage heuristic in {@link compactionParentOf} can use.
-    this.recentCompaction = { sessionId: session.id, at: Date.now() }
     const state = this.states.get(String(session.id))
     if (state?.lastModel !== undefined) this.track(String(session.id), 'compact', state.lastModel)
   }

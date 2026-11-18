@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { SESSION_FORMAT_VERSION, SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { CompactionId } from '@deepseek-ai/dsh-compaction'
-import { COMPACTION_LINEAGE_WINDOW_MS, LifecycleBridge } from '../src/lifecycle-bridge.ts'
+import { LifecycleBridge } from '../src/lifecycle-bridge.ts'
 import type { SessionControlClient } from '../src/control-client.ts'
 import type { SessionControlVerb } from '../src/types.ts'
 
@@ -125,7 +125,6 @@ describe('LifecycleBridge', () => {
   })
 
   describe('compaction parent under the 0.2.2 header semantics', () => {
-    afterEach(() => { vi.useRealTimers() })
     const FORKED = SessionId('forked')
 
     it('never reports a subagent lineage as a compaction parent', () => {
@@ -134,33 +133,11 @@ describe('LifecycleBridge', () => {
       expect(bridge.facts(SID).parentSessionId).toBeUndefined()
     })
 
-    it('attributes the first seeded session after an observed compaction/end', () => {
+    it('does not attribute an unrelated reopened session to a recently compacted one', () => {
       const { bridge } = makeBridge()
       bridge.onSessionEvent(sessionOf({ id: PARENT }), compactionEnd())
-      bridge.onSessionCreated(sessionOf({ id: FORKED, seeded: true }))
-      expect(bridge.facts(FORKED).parentSessionId).toBe(PARENT)
-    })
-
-    it('ignores a seeded session that arrives after the attribution window', () => {
-      vi.useFakeTimers()
-      vi.setSystemTime(new Date(1_000_000))
-      const { bridge } = makeBridge()
-      bridge.onSessionEvent(sessionOf({ id: PARENT }), compactionEnd())
-      vi.setSystemTime(new Date(1_000_000 + COMPACTION_LINEAGE_WINDOW_MS + 1))
-      bridge.onSessionCreated(sessionOf({ id: FORKED, seeded: true }))
-      expect(bridge.facts(FORKED).parentSessionId).toBeUndefined()
-    })
-
-    it('never attributes a fresh session, and never reuses one observation', () => {
-      const { bridge } = makeBridge()
-      bridge.onSessionEvent(sessionOf({ id: PARENT }), compactionEnd())
-      bridge.onSessionCreated(sessionOf({ id: SessionId('fresh'), seeded: false }))
-      expect(bridge.facts(SessionId('fresh')).parentSessionId).toBeUndefined()
-      bridge.onSessionCreated(sessionOf({ id: FORKED, seeded: true }))
-      expect(bridge.facts(FORKED).parentSessionId).toBe(PARENT)
-      const second = SessionId('forked-2')
-      bridge.onSessionCreated(sessionOf({ id: second, seeded: true }))
-      expect(bridge.facts(second).parentSessionId).toBeUndefined()
+      bridge.onSessionCreated(sessionOf({ id: OTHER, seeded: true }))
+      expect(bridge.facts(OTHER)).toMatchObject({ seeded: true, parentSessionId: undefined })
     })
 
     it('does not infer lineage from a failed compaction', () => {
